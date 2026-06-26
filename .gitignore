@@ -1,1 +1,8 @@
 /target
+.idea/
+
+# SSH server host key — secret, auto-generated on first run. Never commit.
+server_key
+
+# macOS folder metadata
+.DS_Store
