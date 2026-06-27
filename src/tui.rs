@@ -2,10 +2,12 @@
 //! SSH channel, plus the screen-drawing code itself.
 
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem};
 use russh::ChannelId;
 use russh::server::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+
+use crate::db::Post;
 
 /// Bridges ratatui to the SSH channel.
 ///
@@ -69,19 +71,19 @@ impl std::io::Write for TerminalHandle {
 /// Describes the entire screen for one frame. ratatui calls this, diffs the
 /// result against what's already on the client's screen, and sends only the
 /// bytes that changed.
-pub fn draw_ui(frame: &mut ratatui::Frame) {
-    let block = Block::default()
-        .title(" shPlank ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+/// Describes the screen for one frame: the posts as a vertical list.
+pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post]) {
+    let items: Vec<ListItem> = posts
+        .iter()
+        .map(|p| ListItem::new(p.title.clone()))
+        .collect();
 
-    let body = Paragraph::new(
-        "Welcome to shPlank — the SSH forum.\n\n\
-         Nothing here yet, but you're looking at a real ratatui screen\n\
-         rendered over SSH.\n\n\
-         (Close the connection with q or Ctrl-C for now.)",
-    )
-    .block(block);
+    let list = List::new(items).block(
+        Block::default()
+            .title(" shPlank ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
 
-    frame.render_widget(body, frame.area());
+    frame.render_widget(list, frame.area());
 }

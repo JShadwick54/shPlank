@@ -10,6 +10,9 @@ use russh::keys::ssh_key::PublicKey;
 use russh::server::*; // Server, Handler, Auth, Session, Msg, ...
 use russh::{Channel, ChannelId, Pty};
 
+use sqlx::SqlitePool;
+use crate::db::Post;
+
 use crate::tui::{TerminalHandle, draw_ui};
 
 /// The "factory". One `AppServer` owns the whole listener; russh asks it for a
@@ -19,11 +22,12 @@ pub struct AppServer {
     // Per-connection counter, just for the log lines. Private to this module —
     // callers use `AppServer::new()` instead of poking at the field.
     next_id: usize,
+    db: SqlitePool,
 }
 
 impl AppServer {
-    pub fn new() -> Self {
-        Self { next_id: 0 }
+    pub fn new(db: SqlitePool) -> Self {
+        Self { next_id: 0, db }
     }
 }
 
@@ -35,7 +39,7 @@ impl Server for AppServer {
         self.next_id += 1;
         let id = self.next_id;
         println!("[connect]    client #{id} from {peer_addr:?}");
-        ClientHandler { id, fingerprint: None, terminal: None }
+        ClientHandler { id, fingerprint: None, terminal: None, db: self.db.clone(), posts: Vec::new() }
     }
 }
 
@@ -43,13 +47,10 @@ impl Server for AppServer {
 /// session progresses: auth → open channel → pty → shell → (resize) → close.
 pub struct ClientHandler {
     id: usize,
-    // The connecting key's SHA256 fingerprint, captured at auth. Nothing reads
-    // it yet — it's the identity hook we'll promote into a real `User` row in
-    // build Step 7. (Expect a "never read" warning until then; that's fine.)
     fingerprint: Option<String>,
-    // None until the session channel opens, then holds the live TUI terminal,
-    // which renders through our TerminalHandle bridge.
     terminal: Option<Terminal<CrosstermBackend<TerminalHandle>>>,
+    db: SqlitePool,
+    posts: Vec<Post>,
 }
 
 impl Handler for ClientHandler {
@@ -108,8 +109,17 @@ impl Handler for ClientHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.posts = match crate::db::list_posts(&self.db).await {
+            Ok(posts) => posts,
+            Err(e) => {
+                eprintln!("[db] failed to load posts: {e}");
+                Vec::new()
+            }
+        };
+
         if let Some(terminal) = self.terminal.as_mut() {
-            terminal.draw(draw_ui)?;
+            let posts = &self.posts;
+            terminal.draw(|frame| draw_ui(frame, posts))?;
         }
         session.channel_success(channel)?;
         Ok(())
@@ -145,7 +155,8 @@ impl Handler for ClientHandler {
         let rect = Rect::new(0, 0, col_width as u16, row_height as u16);
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.resize(rect)?;
-            terminal.draw(draw_ui)?;
+            let posts = &self.posts;
+            terminal.draw(|frame| draw_ui(frame, posts))?;
         }
         Ok(())
     }

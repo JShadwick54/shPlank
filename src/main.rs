@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let posts = db::list_posts(&db).await?;
     println!("[db] loaded {} post(s)", posts.len());
 
-    let mut server = AppServer::new();
+    let mut server = AppServer::new(db);
     println!("shPlank SSH server listening on 0.0.0.0:2222 — Ctrl-C to stop");
     server.run_on_address(Arc::new(config), ("0.0.0.0", 2222)).await?;
     Ok(())
