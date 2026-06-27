@@ -5,6 +5,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::{TerminalOptions, Viewport};
+use ratatui::widgets::ListState;
 
 use russh::keys::ssh_key::PublicKey;
 use russh::server::*; // Server, Handler, Auth, Session, Msg, ...
@@ -19,8 +20,6 @@ use crate::tui::{TerminalHandle, draw_ui};
 /// fresh handler each time a client connects.
 #[derive(Clone)]
 pub struct AppServer {
-    // Per-connection counter, just for the log lines. Private to this module —
-    // callers use `AppServer::new()` instead of poking at the field.
     next_id: usize,
     db: SqlitePool,
 }
@@ -33,13 +32,14 @@ impl AppServer {
 
 impl Server for AppServer {
     type Handler = ClientHandler;
-
-    // Called once per incoming TCP connection. We mint that client's handler.
     fn new_client(&mut self, peer_addr: Option<std::net::SocketAddr>) -> ClientHandler {
         self.next_id += 1;
         let id = self.next_id;
         println!("[connect]    client #{id} from {peer_addr:?}");
-        ClientHandler { id, fingerprint: None, terminal: None, db: self.db.clone(), posts: Vec::new() }
+        ClientHandler {
+            id, fingerprint: None, terminal: None, db: self.db.clone(),
+            posts: Vec::new(), list_state: ListState::default(),
+        }
     }
 }
 
@@ -51,6 +51,7 @@ pub struct ClientHandler {
     terminal: Option<Terminal<CrosstermBackend<TerminalHandle>>>,
     db: SqlitePool,
     posts: Vec<Post>,
+    list_state: ListState,
 }
 
 impl Handler for ClientHandler {
@@ -67,7 +68,6 @@ impl Handler for ClientHandler {
         Ok(Auth::Accept) // accept ANY key for now
     }
 
-    // 1) Session channel opens → build the ratatui terminal over the channel.
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
@@ -83,7 +83,6 @@ impl Handler for ClientHandler {
         Ok(true)
     }
 
-    // 2) Client reports terminal size → resize our viewport to match.
     async fn pty_request(
         &mut self,
         channel: ChannelId,
@@ -103,7 +102,6 @@ impl Handler for ClientHandler {
         Ok(())
     }
 
-    // 3) Shell starts → draw the screen.
     async fn shell_request(
         &mut self,
         channel: ChannelId,
@@ -116,10 +114,14 @@ impl Handler for ClientHandler {
                 Vec::new()
             }
         };
+        if !self.posts.is_empty() {
+            self.list_state.select(Some(0));
+        }
 
         if let Some(terminal) = self.terminal.as_mut() {
             let posts = &self.posts;
-            terminal.draw(|frame| draw_ui(frame, posts))?;
+            let state = &mut self.list_state;
+            terminal.draw(|frame| draw_ui(frame, posts, state))?;
         }
         session.channel_success(channel)?;
         Ok(())
@@ -132,17 +134,34 @@ impl Handler for ClientHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // `q` (0x71) or Ctrl+C (0x03) → close the channel.
-        // Closing tears down the connection, which drops the handler,
-        // which logs [disconnect] via our existing Drop impl.
+        // q / Ctrl+C still quit.
         if data.contains(&b'q') || data.contains(&0x03) {
             session.close(channel)?;
+            return Ok(());
+        }
+
+        // Arrow keys arrive as escape sequences. Move the selection, clamped to
+        // the list bounds. (Terminals send either ESC-[ or ESC-O for arrows.)
+        let len = self.posts.len();
+        if len > 0 {
+            let selected = self.list_state.selected().unwrap_or(0);
+            if data == b"\x1b[A" || data == b"\x1bOA" {
+                self.list_state.select(Some(selected.saturating_sub(1)));
+            } else if data == b"\x1b[B" || data == b"\x1bOB" {
+                self.list_state.select(Some((selected + 1).min(len - 1)));
+            }
+        }
+
+        // Redraw so the highlight moves.
+        if let Some(terminal) = self.terminal.as_mut() {
+            let posts = &self.posts;
+            let state = &mut self.list_state;
+            terminal.draw(|frame| draw_ui(frame, posts, state))?;
         }
         Ok(())
     }
 
-
-    // 4) User resized their window → resize + redraw.
+    //User resized their window
     async fn window_change_request(
         &mut self,
         _channel: ChannelId,
@@ -156,14 +175,14 @@ impl Handler for ClientHandler {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.resize(rect)?;
             let posts = &self.posts;
-            terminal.draw(|frame| draw_ui(frame, posts))?;
+            let state = &mut self.list_state;
+            terminal.draw(|frame| draw_ui(frame, posts, state))?;
         }
         Ok(())
     }
 }
 
-// Runs automatically when the handler is freed (connection closed). This is
-// ownership's "freed at scope end" rule (RAII), used here to log a disconnect.
+// Runs automatically when the handler is freed, used here to log a disconnect.
 impl Drop for ClientHandler {
     fn drop(&mut self) {
         println!("[disconnect] client #{}", self.id);

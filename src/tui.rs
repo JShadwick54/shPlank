@@ -1,8 +1,8 @@
 //! The terminal/rendering layer: turning ratatui's output into bytes on the
-//! SSH channel, plus the screen-drawing code itself.
+//! SSH channel... and screen-drawing code itself.
 
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use russh::ChannelId;
 use russh::server::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -15,10 +15,7 @@ use crate::db::Post;
 /// `std::io::Write`". Normally that's your local terminal; here it's this
 /// adapter, which forwards those bytes over SSH to the connected client.
 pub struct TerminalHandle {
-    // A queue sender. `flush` drops the buffered bytes onto this queue, and a
-    // background task pulls them off and ships them over SSH. The queue exists
-    // because `Write` is synchronous (can't `.await`) but sending over the SSH
-    // channel is async — the queue is the hand-off point between the two.
+    // A queue sender.
     sender: UnboundedSender<Vec<u8>>,
     // ratatui writes output in many small pieces; we accumulate them here and
     // send the whole batch at once when `flush` is called (once per frame).
@@ -72,18 +69,21 @@ impl std::io::Write for TerminalHandle {
 /// result against what's already on the client's screen, and sends only the
 /// bytes that changed.
 /// Describes the screen for one frame: the posts as a vertical list.
-pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post]) {
+pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
     let items: Vec<ListItem> = posts
         .iter()
         .map(|p| ListItem::new(p.title.clone()))
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(" shPlank ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" shPlank ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+        .highlight_symbol("> ");
 
-    frame.render_widget(list, frame.area());
+    frame.render_stateful_widget(list, frame.area(), list_state);
 }
