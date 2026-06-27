@@ -28,7 +28,7 @@ by [late.sh](https://github.com/mpiorowski/late-sh).
 |----------------|-------------------------|--------------------------------------------------|
 | Language       | Rust (edition 2024)     | Also a deliberate learning project               |
 | Async runtime  | `tokio`                 | russh is built on it                             |
-| SSH server     | `russh` 0.61            | Wired to ratatui directly (no wrapper crate)     |
+| SSH server     | `russh` 0.61            | Wired to ratatui directly; **`ring` crypto backend** (not default `aws-lc-rs`) |
 | TUI            | `ratatui` 0.30          | Rendered over the SSH channel, not a local term  |
 | Database       | `sqlx` + SQLite         | Planned (build Step 3); async, single-file       |
 | Key generation | `rand` + `ssh-key`      | (`ssh-key` re-exported via `russh::keys`)        |
@@ -139,6 +139,13 @@ between those two worlds.
 - **russh version pinning matters.** API differs between russh 0.61 (crates.io)
   and the GitHub `main` branch examples. Code here targets **0.61** — e.g.
   `channel_open_session` returns `Result<bool, _>`.
+
+- **`ring` crypto backend, not `aws-lc-rs` (the default).** Set in `Cargo.toml`
+  via `russh = { ..., default-features = false, features = ["ring", "flate2",
+  "rsa"] }`. The default `aws-lc-rs` backend is a C/assembly library that needs
+  NASM + the Windows SDK to build on Windows-MSVC, and is painful to
+  cross-compile to the Pi's ARM target. `ring` ships pre-built and avoids both
+  problems — a deliberate choice for cross-platform dev + ARM deploy.
 
 ---
 
