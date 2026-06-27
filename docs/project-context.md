@@ -23,13 +23,15 @@ simpler and more focused:
 > As of **2026-06-27** — see [`architecture.md`](architecture.md) §6 for the live table.
 
 - Rust toolchain set up; **RustRover** as the IDE.
-- Steps 1, 2a, 2b, 2c **done**: russh server on port 2222 accepts any key, logs
+- Steps 1–5 **done**: russh server on port 2222 accepts any key, logs
   connect/auth/disconnect, captures the connecting key's SHA256 fingerprint,
-  renders a static ratatui screen over the SSH channel, and handles input
-  (`q`/Ctrl+C quit cleanly; window resize works).
+  renders the TUI over the SSH channel, handles input (`q`/Ctrl+C quit, window
+  resize), stores posts + comments in SQLite (`sqlx`), shows a navigable post
+  list, and a detail view (title + body + comments) reachable with Enter.
 - Code is split into modules: `main.rs` (bootstrap), `server.rs` (SSH layer),
-  `tui.rs` (rendering layer).
-- **Next: Step 3** — SQLite via sqlx: Posts table, seed rows, scrollable List.
+  `tui.rs` (rendering layer), `db.rs` (SQLite layer).
+- **Next: Step 6** — create flows: a `tui-textarea` composer for new posts and
+  comments (the write path; reads are complete).
 
 ## Working style (important — read this first)
 

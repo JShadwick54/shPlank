@@ -8,7 +8,7 @@ use russh::ChannelId;
 use russh::server::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
-use crate::db::Post;
+use crate::db::{Comment, Post};
 
 /// Bridges ratatui to the SSH channel.
 ///
@@ -70,10 +70,10 @@ impl std::io::Write for TerminalHandle {
 /// result against what's already on the client's screen, and sends only the
 /// bytes that changed.
 /// Describes the screen for one frame: the posts as a vertical list.
-pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState, detail: Option<&Post>) {
+pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState, detail: Option<(&Post, &[Comment])>) {
     match detail {
         None => draw_list(frame, posts, list_state),
-        Some(post) => draw_detail(frame, post),
+        Some((post, comments)) => draw_detail(frame, post, comments),
     }
 }
 
@@ -96,20 +96,38 @@ fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListSt
     frame.render_stateful_widget(list, frame.area(), list_state);
 }
 
-fn draw_detail(frame: &mut ratatui::Frame, post: &Post) {
-    let title_line = Line::from(vec![
-        Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD)),
-    ]);
-
-    let content = vec![
-        title_line,
+fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD))),
         Line::raw(""),
-        Line::raw(&post.body),
-        Line::raw(""),
-        Line::styled("[ b ] back", Style::default().fg(Color::DarkGray)),
     ];
 
-    let paragraph = Paragraph::new(content)
+    // Split body on newlines so paragraphs render as separate lines.
+    for line in post.body.split('\n') {
+        lines.push(Line::raw(line.to_owned()));
+    }
+
+    if comments.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("No comments yet.", Style::default().fg(Color::DarkGray)));
+    } else {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("── {} comment{} ──", comments.len(), if comments.len() == 1 { "" } else { "s" }),
+            Style::default().fg(Color::DarkGray),
+        ));
+        for comment in comments {
+            lines.push(Line::raw(""));
+            for line in comment.body.split('\n') {
+                lines.push(Line::raw(line.to_owned()));
+            }
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("[ b ] back", Style::default().fg(Color::DarkGray)));
+
+    let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .title(" shPlank ")

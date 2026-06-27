@@ -12,8 +12,8 @@ This is a **learning project** — how you work matters as much as what you buil
 > Read `docs/handoff.md`, then `docs/project-context.md` and `docs/architecture.md`.
 > Note the working-style section: go step-by-step with verification, no large code
 > dumps, and I run the code myself in my IDE (don't auto-edit `main.rs` or run cargo
-> unless I ask). We're starting **Build Step 5: Comments**. Confirm you've
-> read the context and propose the first small step.
+> unless I ask). We're starting **Build Step 6: Create flows (composer)**. Confirm
+> you've read the context and propose the first small step.
 
 ---
 
@@ -54,20 +54,36 @@ brief and `architecture.md` for how the code is structured.
   detail, `b`/Escape returns to list. Key borrow-checker lesson: inline field matches
   inside `if let Some(terminal) = self.terminal.as_mut()` blocks; `#[derive(Copy,Clone)]`
   on enums that only hold `Copy` types.
+- ✅ **Step 5** — Comments: `comments` table + `Comment` struct + `list_comments(pool,
+  post_id)` in `db.rs`. Comments lazily loaded into `ClientHandler.comments` when Enter
+  opens a post. `draw_detail` renders title + body + comments, splitting body/comment
+  text on `\n` so paragraphs display properly. `detail` arg to `draw_ui` is now a tuple
+  `Option<(&Post, &[Comment])>`.
 
-## Your immediate task: Step 5 — Comments
+## Your immediate task: Step 6 — Create flows (composer)
 
-**Goal:** add a `Comments` table and render comments under a post in the detail view.
+**Goal:** the write path — create new posts and comments from inside the TUI (so far
+everything is read-only seed data). This is where shPlank becomes truly interactive.
 
-**Rough sub-steps:**
-- Add `comments` table in `db.rs` `init()` (`id`, `post_id`, `author_id`, `body`, `created_at`).
-- Add `Comment` struct + `list_comments(pool, post_id)` query to `db.rs`.
-- Seed a couple of comments in `seed_if_empty`.
-- Load comments in `shell_request` (or lazily on Detail open) and store on `ClientHandler`.
-- Update `draw_detail` in `tui.rs` to render comments below the post body.
+**Key new dependency:** the `tui-textarea` crate for multi-line text input — far
+better than hand-decoding every keystroke (which we only do for single-key nav).
+Verify the current version + ratatui-0.30 compatibility on crates.io/docs.rs before
+adding it (ratatui 0.30 is recent; confirm tui-textarea supports it).
 
-Keep the same patterns already established: runtime `sqlx::query(...)`, no `query!`
-macros, match-on-screen dispatch in `data`, inline field borrows inside terminal blocks.
+**Rough sub-steps (verify each):**
+- Add new `Screen` variants for composing (e.g. `ComposePost`, `ComposeComment(post_id)`).
+- Hold a `tui-textarea` `TextArea` in `ClientHandler` for the active editor.
+- Route keystrokes to the textarea while composing; a submit key (e.g. Ctrl+S or Enter
+  in a single-line title field) triggers an `INSERT`.
+- Add `insert_post(...)` / `insert_comment(...)` to `db.rs`.
+- After insert, reload posts/comments from the DB (it stays the source of truth) and
+  return to the relevant view.
+
+**Open question to resolve with the human:** post composition needs both a title and a
+body — decide the UX (two-field form? title line then body?). Ask before building.
+
+Keep established patterns: runtime `sqlx::query(...)`, no `query!` macros,
+match-on-screen dispatch in `data`, inline field borrows inside terminal blocks.
 
 ## Technical must-knows (don't skip)
 
@@ -115,6 +131,6 @@ Expect a cyan `shPlank` box. Until 2(c) lands, disconnect by Ctrl+C-ing the serv
 ## Build order (full roadmap)
 
 1 ✅ toolchain · 2a ✅ / 2b ✅ / 2c ✅ · 3 ✅ sqlx+SQLite · 4 ✅ post detail ·
-**5 ⬅ next (comments)** · 6 ⬜ composer (tui-textarea) · 7 ⬜ Users from
+5 ✅ comments · **6 ⬅ next (composer, tui-textarea)** · 7 ⬜ Users from
 fingerprint + admin mod · 8 ⬜ polish · 9 ⬜ cross-compile + deploy to Pi.
 See `project-context.md` for details on each.

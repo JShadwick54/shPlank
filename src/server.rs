@@ -12,7 +12,7 @@ use russh::server::*; // Server, Handler, Auth, Session, Msg, ...
 use russh::{Channel, ChannelId, Pty};
 
 use sqlx::SqlitePool;
-use crate::db::Post;
+use crate::db::{Comment, Post};
 
 use crate::tui::{TerminalHandle, draw_ui};
 
@@ -48,7 +48,7 @@ impl Server for AppServer {
         ClientHandler {
             id, fingerprint: None, terminal: None, db: self.db.clone(),
             posts: Vec::new(), list_state: ListState::default(),
-            screen: Screen::List,
+            screen: Screen::List, comments: Vec::new(),
         }
     }
 }
@@ -63,6 +63,7 @@ pub struct ClientHandler {
     posts: Vec<Post>,
     list_state: ListState,
     screen: Screen,
+    comments: Vec<Comment>,
 }
 
 impl ClientHandler {
@@ -143,7 +144,7 @@ impl Handler for ClientHandler {
             let state = &mut self.list_state;
             let detail = match self.screen {
                 Screen::List => None,
-                Screen::Detail(i) => posts.get(i),
+                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
             };
             terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
@@ -175,8 +176,14 @@ impl Handler for ClientHandler {
                     } else if data == b"\x1b[B" || data == b"\x1bOB" {
                         self.list_state.select(Some((selected + 1).min(len - 1)));
                     } else if data == b"\r" {
-                        // Enter — open the selected post.
                         self.screen = Screen::Detail(selected);
+                        self.comments = match crate::db::list_comments(&self.db, self.posts[selected].id).await {
+                            Ok(comments) => comments,
+                            Err(e) => {
+                                eprintln!("[db] failed to load comments: {e}");
+                                Vec::new()
+                            }
+                        };
                     }
                 }
             }
@@ -194,7 +201,7 @@ impl Handler for ClientHandler {
             let state = &mut self.list_state;
             let detail = match self.screen {
                 Screen::List => None,
-                Screen::Detail(i) => posts.get(i),
+                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
             };
             terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
@@ -218,7 +225,7 @@ impl Handler for ClientHandler {
             let state = &mut self.list_state;
             let detail = match self.screen {
                 Screen::List => None,
-                Screen::Detail(i) => posts.get(i),
+                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
             };
             terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }

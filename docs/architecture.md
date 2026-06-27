@@ -17,7 +17,7 @@ by [late.sh](https://github.com/mpiorowski/late-sh).
 ```
   you ──ssh──► shPlank server ──► TUI rendered back over the SSH channel
                     │
-                    └──► SQLite database (posts, comments, users)   [planned]
+                    └──► SQLite database (posts, comments; users planned)
 ```
 
 ---
@@ -30,7 +30,7 @@ by [late.sh](https://github.com/mpiorowski/late-sh).
 | Async runtime  | `tokio`                 | russh is built on it                             |
 | SSH server     | `russh` 0.61            | Wired to ratatui directly; **`ring` crypto backend** (not default `aws-lc-rs`) |
 | TUI            | `ratatui` 0.30          | Rendered over the SSH channel, not a local term  |
-| Database       | `sqlx` + SQLite         | Planned (build Step 3); async, single-file       |
+| Database       | `sqlx` 0.9 + SQLite     | Done (Step 3); async, single-file (`shplank.db`)  |
 | Key generation | `rand` + `ssh-key`      | (`ssh-key` re-exported via `russh::keys`)        |
 
 russh + ratatui are wired together **directly** (not via a wrapper like `sshui`)
@@ -42,35 +42,50 @@ russh + ratatui are wired together **directly** (not via a wrapper like `sshui`)
 
 ```
 src/
-├── main.rs    Bootstrap: start the runtime, build config + host key, run listener
+├── main.rs    Bootstrap: start the runtime, build config + host key, open DB, run listener
 ├── server.rs  SSH layer: AppServer (factory) + ClientHandler (per-connection)
-└── tui.rs     Rendering layer: TerminalHandle (byte bridge) + draw_ui (the view)
+├── tui.rs     Rendering layer: TerminalHandle (byte bridge) + draw_ui / draw_list / draw_detail
+└── db.rs      Database layer: SQLite pool init, schema, queries, seed data
 
 docs/
-├── architecture.md   (this file)
-└── rust-cheatsheet.md
+├── architecture.md                      (this file)
+├── handoff.md                           session-to-session pickup doc
+├── project-context.md                   original project brief
+├── shplank-current-application-flow.md  detailed code-flow study doc
+└── rust-cheatsheet.md                   language reference
 ```
 
 ### Module responsibilities
 
 - **`main.rs`** — the entry point. Starts the tokio runtime (`#[tokio::main]`),
-  assembles the server `Config` (including the SSH host key), and calls
-  `run_on_address` to listen on `0.0.0.0:2222`. Also owns
-  `load_or_generate_host_key()`.
+  assembles the server `Config` (including the SSH host key), opens the SQLite
+  pool via `db::init()` + `db::seed_if_empty()`, and calls `run_on_address` to
+  listen on `0.0.0.0:2222`. Also owns `load_or_generate_host_key()`.
 
 - **`server.rs`** — the SSH-facing logic:
   - `AppServer` — the *factory*. One instance owns the whole listener; russh
-    calls `new_client` to mint a handler per connection. Constructed via
-    `AppServer::new()`.
-  - `ClientHandler` — the *per-connection brain*. Holds that client's state
-    (`id`, captured key `fingerprint`, and its ratatui `terminal`). russh calls
-    its methods as SSH events occur. `impl Drop` logs disconnects.
+    calls `new_client` to mint a handler per connection. Holds the shared
+    `SqlitePool`; constructed via `AppServer::new(db)`.
+  - `ClientHandler` — the *per-connection brain*. Holds that client's state:
+    `id`, captured key `fingerprint`, its ratatui `terminal`, a clone of the
+    `db` pool, the loaded `posts` + `comments`, the `list_state` (selection),
+    and the current `screen`. russh calls its methods as SSH events occur.
+    `impl Drop` logs disconnects.
+  - `Screen` — an enum (`List` / `Detail(usize)`) tracking which view the client
+    is on; the `usize` indexes into `posts`.
 
 - **`tui.rs`** — everything about producing screen output:
   - `TerminalHandle` — adapter implementing `std::io::Write`. ratatui writes
     bytes into it; it forwards them over the SSH channel. This is the bridge
     between ratatui's *synchronous* `Write` interface and russh's *async* send.
-  - `draw_ui(frame)` — describes the whole screen for one frame.
+  - `draw_ui(frame, posts, list_state, detail)` — dispatches on `detail`:
+    `None` → `draw_list` (the scrollable post list), `Some((post, comments))` →
+    `draw_detail` (title + body + comments).
+
+- **`db.rs`** — the database layer: `init()` (open pool + create tables),
+  `seed_if_empty()` (dev seed data), `list_posts()`, `list_comments(post_id)`,
+  and the `Post` / `Comment` row structs (`#[derive(FromRow)]`). All queries use
+  runtime `sqlx::query(...)` functions, not the compile-time `query!` macros.
 
 ---
 
@@ -84,10 +99,15 @@ the right moments. The lifecycle of one connection:
 2. Public-key auth   → ClientHandler::auth_publickey() captures SHA256 fingerprint, accepts
 3. Open session chan → channel_open_session()          builds the ratatui Terminal over the channel
 4. PTY request       → pty_request()                   resizes the terminal to the client's size
-5. Shell request     → shell_request()                 draws the screen (draw_ui)
-6. Window resize     → window_change_request()          resizes + redraws
-7. Disconnect        → ClientHandler dropped            Drop logs [disconnect]; bg task exits
+5. Shell request     → shell_request()                 loads posts from DB, draws the list
+6. Keystroke         → data()                          navigation / Enter→detail / b→back / q→quit, redraws
+7. Window resize     → window_change_request()          resizes + redraws
+8. Disconnect        → ClientHandler dropped            Drop logs [disconnect]; bg task exits
 ```
+
+The `data` handler dispatches on the current `Screen`: in `List`, arrow keys move
+the selection and Enter opens the highlighted post (lazily loading its comments);
+in `Detail`, `b`/Escape return to the list. `q`/Ctrl+C quit from anywhere.
 
 ### The rendering data path
 
@@ -133,8 +153,10 @@ between those two worlds.
   **gitignored** (it's a secret) and regenerated per machine — so the project
   stays portable across dev machines with nothing to copy.
 
-- **Database as the single source of truth (planned).** Once SQLite lands, the
-  DB — not hand-rolled in-memory state — is authoritative for posts/comments.
+- **Database as the single source of truth.** The SQLite DB — not hand-rolled
+  in-memory state — is authoritative for posts/comments. Each `ClientHandler`
+  loads its own snapshot from the DB (posts at shell start, a post's comments
+  when opened) rather than sharing mutable state between connections.
 
 - **russh version pinning matters.** API differs between russh 0.61 (crates.io)
   and the GitHub `main` branch examples. Code here targets **0.61** — e.g.
@@ -161,9 +183,8 @@ Build order from the project plan, with current status:
 | 2c   | Handle input (`q`/Ctrl+C to quit) + window resize     | ✅ Done      |
 | 3    | SQLite via sqlx — Posts table, scrollable List widget | ✅ Done      |
 | 4    | Post detail view — title + body; list ↔ detail nav    | ✅ Done      |
-
-| 5    | Comments — table + render under a post                | ⏳ Next      |
-| 6    | Create flows — composer (tui-textarea) for posts/comments | ⬜ Planned |
+| 5    | Comments — table + render under a post                | ✅ Done      |
+| 6    | Create flows — composer (tui-textarea) for posts/comments | ⏳ Next   |
 | 7    | Identity → Users — promote fingerprint to User rows; admin moderation | ⬜ Planned |
 | 8    | Polish — keybindings, help/status bar, empty states, error handling | ⬜ Planned |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
@@ -182,10 +203,11 @@ Then from another terminal (using a passphrase-less test key to avoid prompts):
 ssh -p 2222 -i ~/.ssh/shplank_test -o IdentitiesOnly=yes localhost
 ```
 
-You should see a cyan-bordered `shPlank` box. The server terminal logs
-`[connect] / [auth] / [disconnect]`. Press **`q`** or **Ctrl+C** in the SSH
-session to disconnect cleanly (Step 2c). You can also `Ctrl+C` the server
-process to stop the listener entirely.
+You should see a cyan-bordered `shPlank` box listing the seeded posts. Arrow keys
+move the selection, **Enter** opens a post (title + body + comments), **`b`** or
+Escape returns to the list, and **`q`** or **Ctrl+C** disconnects cleanly. The
+server terminal logs `[connect] / [auth] / [disconnect]`. You can also `Ctrl+C`
+the server process to stop the listener entirely.
 
 **Deploy target:** Raspberry Pi 3B (ARM), runs as a systemd service on port 2222,
 local network only. The Pi is a deploy target only — never build on it (1GB RAM).
