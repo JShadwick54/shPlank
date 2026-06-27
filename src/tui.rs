@@ -1,8 +1,9 @@
 //! The terminal/rendering layer: turning ratatui's output into bytes on the
 //! SSH channel... and screen-drawing code itself.
 
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use russh::ChannelId;
 use russh::server::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -69,7 +70,14 @@ impl std::io::Write for TerminalHandle {
 /// result against what's already on the client's screen, and sends only the
 /// bytes that changed.
 /// Describes the screen for one frame: the posts as a vertical list.
-pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
+pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState, detail: Option<&Post>) {
+    match detail {
+        None => draw_list(frame, posts, list_state),
+        Some(post) => draw_detail(frame, post),
+    }
+}
+
+fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
     let items: Vec<ListItem> = posts
         .iter()
         .map(|p| ListItem::new(p.title.clone()))
@@ -86,4 +94,29 @@ pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut List
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(list, frame.area(), list_state);
+}
+
+fn draw_detail(frame: &mut ratatui::Frame, post: &Post) {
+    let title_line = Line::from(vec![
+        Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD)),
+    ]);
+
+    let content = vec![
+        title_line,
+        Line::raw(""),
+        Line::raw(&post.body),
+        Line::raw(""),
+        Line::styled("[ b ] back", Style::default().fg(Color::DarkGray)),
+    ];
+
+    let paragraph = Paragraph::new(content)
+        .block(
+            Block::default()
+                .title(" shPlank ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, frame.area());
 }

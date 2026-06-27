@@ -159,9 +159,10 @@ Build order from the project plan, with current status:
 | 2a   | russh accepts connections on 2222, logs lifecycle, captures fingerprint | ✅ Done |
 | 2b   | Render a static ratatui screen over the session       | ✅ Done      |
 | 2c   | Handle input (`q`/Ctrl+C to quit) + window resize     | ✅ Done      |
-| 3    | SQLite via sqlx — Posts table, scrollable List widget | ⏳ Next      |
-| 4    | Post detail view — title + body; list ↔ detail nav    | ⬜ Planned   |
-| 5    | Comments — table + render under a post                | ⬜ Planned   |
+| 3    | SQLite via sqlx — Posts table, scrollable List widget | ✅ Done      |
+| 4    | Post detail view — title + body; list ↔ detail nav    | ✅ Done      |
+
+| 5    | Comments — table + render under a post                | ⏳ Next      |
 | 6    | Create flows — composer (tui-textarea) for posts/comments | ⬜ Planned |
 | 7    | Identity → Users — promote fingerprint to User rows; admin moderation | ⬜ Planned |
 | 8    | Polish — keybindings, help/status bar, empty states, error handling | ⬜ Planned |

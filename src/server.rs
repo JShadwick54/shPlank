@@ -16,6 +16,15 @@ use crate::db::Post;
 
 use crate::tui::{TerminalHandle, draw_ui};
 
+
+/// Which screen the client is currently viewing.
+#[derive(Copy, Clone)]
+enum Screen {
+    List,
+    Detail(usize),
+}
+
+
 /// The "factory". One `AppServer` owns the whole listener; russh asks it for a
 /// fresh handler each time a client connects.
 #[derive(Clone)]
@@ -39,6 +48,7 @@ impl Server for AppServer {
         ClientHandler {
             id, fingerprint: None, terminal: None, db: self.db.clone(),
             posts: Vec::new(), list_state: ListState::default(),
+            screen: Screen::List,
         }
     }
 }
@@ -52,6 +62,16 @@ pub struct ClientHandler {
     db: SqlitePool,
     posts: Vec<Post>,
     list_state: ListState,
+    screen: Screen,
+}
+
+impl ClientHandler {
+    fn current_post(&self) -> Option<&Post> {
+        match self.screen {
+            Screen::List => None,
+            Screen::Detail(i) => self.posts.get(i),
+        }
+    }
 }
 
 impl Handler for ClientHandler {
@@ -121,7 +141,11 @@ impl Handler for ClientHandler {
         if let Some(terminal) = self.terminal.as_mut() {
             let posts = &self.posts;
             let state = &mut self.list_state;
-            terminal.draw(|frame| draw_ui(frame, posts, state))?;
+            let detail = match self.screen {
+                Screen::List => None,
+                Screen::Detail(i) => posts.get(i),
+            };
+            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
         session.channel_success(channel)?;
         Ok(())
@@ -140,15 +164,27 @@ impl Handler for ClientHandler {
             return Ok(());
         }
 
-        // Arrow keys arrive as escape sequences. Move the selection, clamped to
-        // the list bounds. (Terminals send either ESC-[ or ESC-O for arrows.)
-        let len = self.posts.len();
-        if len > 0 {
-            let selected = self.list_state.selected().unwrap_or(0);
-            if data == b"\x1b[A" || data == b"\x1bOA" {
-                self.list_state.select(Some(selected.saturating_sub(1)));
-            } else if data == b"\x1b[B" || data == b"\x1bOB" {
-                self.list_state.select(Some((selected + 1).min(len - 1)));
+        //input
+        match self.screen {
+            Screen::List => {
+                let len = self.posts.len();
+                if len > 0 {
+                    let selected = self.list_state.selected().unwrap_or(0);
+                    if data == b"\x1b[A" || data == b"\x1bOA" {
+                        self.list_state.select(Some(selected.saturating_sub(1)));
+                    } else if data == b"\x1b[B" || data == b"\x1bOB" {
+                        self.list_state.select(Some((selected + 1).min(len - 1)));
+                    } else if data == b"\r" {
+                        // Enter — open the selected post.
+                        self.screen = Screen::Detail(selected);
+                    }
+                }
+            }
+            Screen::Detail(_) => {
+                // b or Escape — go back to the list.
+                if data == b"b" || data == b"\x1b" {
+                    self.screen = Screen::List;
+                }
             }
         }
 
@@ -156,7 +192,11 @@ impl Handler for ClientHandler {
         if let Some(terminal) = self.terminal.as_mut() {
             let posts = &self.posts;
             let state = &mut self.list_state;
-            terminal.draw(|frame| draw_ui(frame, posts, state))?;
+            let detail = match self.screen {
+                Screen::List => None,
+                Screen::Detail(i) => posts.get(i),
+            };
+            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
         Ok(())
     }
@@ -176,7 +216,11 @@ impl Handler for ClientHandler {
             terminal.resize(rect)?;
             let posts = &self.posts;
             let state = &mut self.list_state;
-            terminal.draw(|frame| draw_ui(frame, posts, state))?;
+            let detail = match self.screen {
+                Screen::List => None,
+                Screen::Detail(i) => posts.get(i),
+            };
+            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
         Ok(())
     }

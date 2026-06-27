@@ -12,7 +12,7 @@ This is a **learning project** — how you work matters as much as what you buil
 > Read `docs/handoff.md`, then `docs/project-context.md` and `docs/architecture.md`.
 > Note the working-style section: go step-by-step with verification, no large code
 > dumps, and I run the code myself in my IDE (don't auto-edit `main.rs` or run cargo
-> unless I ask). We're starting **Build Step 3: SQLite via sqlx**. Confirm you've
+> unless I ask). We're starting **Build Step 5: Comments**. Confirm you've
 > read the context and propose the first small step.
 
 ---
@@ -44,32 +44,30 @@ brief and `architecture.md` for how the code is structured.
   `session.close(channel)`; the existing `Drop` impl logs `[disconnect]`. The
   `data` handler lives in `impl Handler for ClientHandler` in `server.rs`.
 - ✅ Code split into modules: `main.rs` (bootstrap), `server.rs` (SSH layer),
-  `tui.rs` (rendering + the `TerminalHandle` byte-bridge).
+  `tui.rs` (rendering + the `TerminalHandle` byte-bridge), `db.rs` (SQLite layer).
 - ✅ Builds and runs on macOS **and** Windows (MSVC). Host key auto-generates per machine.
+- ✅ **Step 3** — `sqlx` + SQLite: `db.rs` with `init()`, `list_posts()`,
+  `seed_if_empty()`. `Posts` table. Pool threaded into `AppServer` → `ClientHandler`.
+  Navigable `List` widget with arrow keys and selection highlight.
+- ✅ **Step 4** — Post detail view: `Screen` enum (`List` / `Detail(usize)`) on
+  `ClientHandler`. `draw_ui` dispatches to `draw_list` or `draw_detail`. Enter opens
+  detail, `b`/Escape returns to list. Key borrow-checker lesson: inline field matches
+  inside `if let Some(terminal) = self.terminal.as_mut()` blocks; `#[derive(Copy,Clone)]`
+  on enums that only hold `Copy` types.
 
-## Your immediate task: Step 3 — SQLite via sqlx
+## Your immediate task: Step 5 — Comments
 
-**Goal:** the first real "forum" behavior — a `Posts` table in SQLite, a few seeded
-rows, rendered in a scrollable ratatui `List`. This is also the first taste of
-async SQL in Rust, which the human flagged as the steepest part of the curve — go
-extra slow here.
+**Goal:** add a `Comments` table and render comments under a post in the detail view.
 
-**Decided constraints (from `project-context.md`, don't relitigate):**
-- `sqlx` + **SQLite** (single-file, async — fits tokio/russh). `rusqlite` (sync) is
-  the fallback only if async-SQL friction gets bad early.
-- Use sqlx **runtime** query functions (`sqlx::query(...)`), **NOT** the compile-time
-  `query!` macros — those need a live DB at build time, which we don't want.
-- Let the **DB be the single source of truth** — no hand-rolled shared in-memory
-  state for posts.
+**Rough sub-steps:**
+- Add `comments` table in `db.rs` `init()` (`id`, `post_id`, `author_id`, `body`, `created_at`).
+- Add `Comment` struct + `list_comments(pool, post_id)` query to `db.rs`.
+- Seed a couple of comments in `seed_if_empty`.
+- Load comments in `shell_request` (or lazily on Detail open) and store on `ClientHandler`.
+- Update `draw_detail` in `tui.rs` to render comments below the post body.
 
-**Data model for Posts (starting point):** `id`, `author_id`, `title`, `body`,
-`created_at`. (Users/author wiring comes in Step 7; for now an `author_id` column
-that we can seed with a placeholder is fine.)
-
-**Rough sub-steps (verify each before moving on):** add the `sqlx` dependency →
-open/create the DB file + run a `CREATE TABLE` → seed a couple rows → query them →
-render in a ratatui `List` → wire arrow-key navigation through the new `data`
-handler. Confirm the sqlx 0.8 API on docs.rs rather than guessing.
+Keep the same patterns already established: runtime `sqlx::query(...)`, no `query!`
+macros, match-on-screen dispatch in `data`, inline field borrows inside terminal blocks.
 
 ## Technical must-knows (don't skip)
 
@@ -116,7 +114,7 @@ Expect a cyan `shPlank` box. Until 2(c) lands, disconnect by Ctrl+C-ing the serv
 
 ## Build order (full roadmap)
 
-1 ✅ toolchain · 2a ✅ / 2b ✅ / 2c ✅ (input) · **3 ⬅ next (sqlx+SQLite posts list)** ·
-4 ⬜ post detail · 5 ⬜ comments · 6 ⬜ composer (tui-textarea) · 7 ⬜ Users from
+1 ✅ toolchain · 2a ✅ / 2b ✅ / 2c ✅ · 3 ✅ sqlx+SQLite · 4 ✅ post detail ·
+**5 ⬅ next (comments)** · 6 ⬜ composer (tui-textarea) · 7 ⬜ Users from
 fingerprint + admin mod · 8 ⬜ polish · 9 ⬜ cross-compile + deploy to Pi.
 See `project-context.md` for details on each.
