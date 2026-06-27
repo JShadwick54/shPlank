@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-
 use russh::server::{Config, Server}; // Server trait brings `run_on_address` into scope
 
 // Declare the other source files as modules of this crate. Without these two
 // lines, `server.rs` and `tui.rs` would simply be ignored by the compiler.
 mod server;
 mod tui;
+mod db;
 
 use crate::server::AppServer;
 
@@ -21,6 +21,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         keys: vec![load_or_generate_host_key()],
         ..Default::default()
     };
+
+    let db = db::init().await?;
+    db::seed_if_empty(&db).await?;
+    let posts = db::list_posts(&db).await?;
+    println!("[db] loaded {} post(s)", posts.len());
 
     let mut server = AppServer::new();
     println!("shPlank SSH server listening on 0.0.0.0:2222 — Ctrl-C to stop");

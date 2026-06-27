@@ -158,8 +158,8 @@ Build order from the project plan, with current status:
 | 1    | Toolchain + skeleton, Hello World                     | ✅ Done      |
 | 2a   | russh accepts connections on 2222, logs lifecycle, captures fingerprint | ✅ Done |
 | 2b   | Render a static ratatui screen over the session       | ✅ Done      |
-| 2c   | Handle input (`q` to quit) + window resize            | ⏳ Next (resize done) |
-| 3    | SQLite via sqlx — Posts table, scrollable List widget | ⬜ Planned   |
+| 2c   | Handle input (`q`/Ctrl+C to quit) + window resize     | ✅ Done      |
+| 3    | SQLite via sqlx — Posts table, scrollable List widget | ⏳ Next      |
 | 4    | Post detail view — title + body; list ↔ detail nav    | ⬜ Planned   |
 | 5    | Comments — table + render under a post                | ⬜ Planned   |
 | 6    | Create flows — composer (tui-textarea) for posts/comments | ⬜ Planned |
@@ -182,8 +182,9 @@ ssh -p 2222 -i ~/.ssh/shplank_test -o IdentitiesOnly=yes localhost
 ```
 
 You should see a cyan-bordered `shPlank` box. The server terminal logs
-`[connect] / [auth] / [disconnect]`. Until input handling (Step 2c) lands,
-disconnect with **Enter then `~.`**, or `Ctrl+C` the server process.
+`[connect] / [auth] / [disconnect]`. Press **`q`** or **Ctrl+C** in the SSH
+session to disconnect cleanly (Step 2c). You can also `Ctrl+C` the server
+process to stop the listener entirely.
 
 **Deploy target:** Raspberry Pi 3B (ARM), runs as a systemd service on port 2222,
 local network only. The Pi is a deploy target only — never build on it (1GB RAM).

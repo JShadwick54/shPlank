@@ -79,7 +79,7 @@ pub fn draw_ui(frame: &mut ratatui::Frame) {
         "Welcome to shPlank — the SSH forum.\n\n\
          Nothing here yet, but you're looking at a real ratatui screen\n\
          rendered over SSH.\n\n\
-         (Close the connection with ~. or Ctrl-C for now.)",
+         (Close the connection with q or Ctrl-C for now.)",
     )
     .block(block);
 

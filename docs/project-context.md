@@ -23,12 +23,13 @@ simpler and more focused:
 > As of **2026-06-27** — see [`architecture.md`](architecture.md) §6 for the live table.
 
 - Rust toolchain set up; **RustRover** as the IDE.
-- Steps 1, 2a, 2b **done**: russh server on port 2222 accepts any key, logs
-  connect/auth/disconnect, captures the connecting key's SHA256 fingerprint, and
-  renders a static ratatui screen over the SSH channel.
+- Steps 1, 2a, 2b, 2c **done**: russh server on port 2222 accepts any key, logs
+  connect/auth/disconnect, captures the connecting key's SHA256 fingerprint,
+  renders a static ratatui screen over the SSH channel, and handles input
+  (`q`/Ctrl+C quit cleanly; window resize works).
 - Code is split into modules: `main.rs` (bootstrap), `server.rs` (SSH layer),
   `tui.rs` (rendering layer).
-- **Next: Step 2c** — handle input (`q` to quit); window resize already works.
+- **Next: Step 3** — SQLite via sqlx: Posts table, seed rows, scrollable List.
 
 ## Working style (important — read this first)
 
@@ -147,8 +148,8 @@ Comments
 1. **Toolchain + skeleton** — rustup, `cargo new`, Hello World runs. ✅
 2. **russh hello-world → static ratatui screen.** (a) accept connections on 2222,
    accept any key, log connect/disconnect, capture fingerprint ✅; (b) render a
-   static ratatui screen on a PTY session ✅; (c) handle input (q to quit) +
-   window resize (resize ✅, input ⬜). Scaffold off russh's `ratatui_app.rs`.
+   static ratatui screen on a PTY session ✅; (c) handle input (q/Ctrl+C to
+   quit) ✅ + window resize ✅. Scaffold off russh's `ratatui_app.rs`.
 3. **SQLite via sqlx** — create DB, `Posts` table, seed rows, render a scrollable
    list (ratatui `List`). Use runtime query functions, not `query!` macros. Let the
    DB be the single source of truth; no hand-rolled shared in-memory state.

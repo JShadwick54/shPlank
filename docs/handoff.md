@@ -12,7 +12,7 @@ This is a **learning project** — how you work matters as much as what you buil
 > Read `docs/handoff.md`, then `docs/project-context.md` and `docs/architecture.md`.
 > Note the working-style section: go step-by-step with verification, no large code
 > dumps, and I run the code myself in my IDE (don't auto-edit `main.rs` or run cargo
-> unless I ask). We're starting **Build Step 2(c): input handling**. Confirm you've
+> unless I ask). We're starting **Build Step 3: SQLite via sqlx**. Confirm you've
 > read the context and propose the first small step.
 
 ---
@@ -40,39 +40,36 @@ brief and `architecture.md` for how the code is structured.
 - ✅ **Step 2(a)** — russh server on `0.0.0.0:2222`, accepts any public key, logs
   connect/auth/disconnect, captures the connecting key's SHA256 fingerprint.
 - ✅ **Step 2(b)** — static ratatui screen rendered over the SSH channel.
+- ✅ **Step 2(c)** — input handling: `q`/Ctrl+C close the channel cleanly via
+  `session.close(channel)`; the existing `Drop` impl logs `[disconnect]`. The
+  `data` handler lives in `impl Handler for ClientHandler` in `server.rs`.
 - ✅ Code split into modules: `main.rs` (bootstrap), `server.rs` (SSH layer),
   `tui.rs` (rendering + the `TerminalHandle` byte-bridge).
 - ✅ Builds and runs on macOS **and** Windows (MSVC). Host key auto-generates per machine.
 
-## Your immediate task: Step 2(c) — input handling
+## Your immediate task: Step 3 — SQLite via sqlx
 
-**Goal:** make keystrokes reach the server and let the user quit cleanly. Right now
-the screen is static and the only way out is killing the server, which is annoying.
+**Goal:** the first real "forum" behavior — a `Posts` table in SQLite, a few seeded
+rows, rendered in a scrollable ratatui `List`. This is also the first taste of
+async SQL in Rust, which the human flagged as the steepest part of the curve — go
+extra slow here.
 
-**Where the code goes:** `src/server.rs`, in `impl Handler for ClientHandler`. Add
-the `data` handler — russh delivers typed bytes there:
-```rust
-async fn data(
-    &mut self,
-    channel: ChannelId,
-    data: &[u8],
-    session: &mut Session,
-) -> Result<(), Self::Error> { ... }
-```
-`data` is raw terminal input (e.g. `b'q'` = 0x71, Ctrl+C = 0x03, arrow keys are
-escape sequences).
+**Decided constraints (from `project-context.md`, don't relitigate):**
+- `sqlx` + **SQLite** (single-file, async — fits tokio/russh). `rusqlite` (sync) is
+  the fallback only if async-SQL friction gets bad early.
+- Use sqlx **runtime** query functions (`sqlx::query(...)`), **NOT** the compile-time
+  `query!` macros — those need a live DB at build time, which we don't want.
+- Let the **DB be the single source of truth** — no hand-rolled shared in-memory
+  state for posts.
 
-**Acceptance for 2(c):**
-- Pressing **`q`** (and ideally **Ctrl+C**) cleanly closes the channel/connection;
-  the server logs `[disconnect]`.
-- Window resize already works (`window_change_request`), so 2(c) is really just input.
+**Data model for Posts (starting point):** `id`, `author_id`, `title`, `body`,
+`created_at`. (Users/author wiring comes in Step 7; for now an `author_id` column
+that we can seed with a placeholder is fine.)
 
-**Verify the exact russh API before writing it** — see "Must-knows" below. The
-method to end the session is likely `session.close(channel)` and/or a disconnect
-call; confirm the 0.61 signature on docs.rs rather than guessing.
-
-Keep it minimal first (just `q`/Ctrl+C to quit). Richer key handling (arrows, etc.)
-comes naturally in Step 3+ when there's a list to navigate.
+**Rough sub-steps (verify each before moving on):** add the `sqlx` dependency →
+open/create the DB file + run a `CREATE TABLE` → seed a couple rows → query them →
+render in a ratatui `List` → wire arrow-key navigation through the new `data`
+handler. Confirm the sqlx 0.8 API on docs.rs rather than guessing.
 
 ## Technical must-knows (don't skip)
 
@@ -119,7 +116,7 @@ Expect a cyan `shPlank` box. Until 2(c) lands, disconnect by Ctrl+C-ing the serv
 
 ## Build order (full roadmap)
 
-1 ✅ toolchain · 2a ✅ / 2b ✅ / **2c ⬅ next (input)** · 3 ⬜ sqlx+SQLite posts list ·
+1 ✅ toolchain · 2a ✅ / 2b ✅ / 2c ✅ (input) · **3 ⬅ next (sqlx+SQLite posts list)** ·
 4 ⬜ post detail · 5 ⬜ comments · 6 ⬜ composer (tui-textarea) · 7 ⬜ Users from
 fingerprint + admin mod · 8 ⬜ polish · 9 ⬜ cross-compile + deploy to Pi.
 See `project-context.md` for details on each.

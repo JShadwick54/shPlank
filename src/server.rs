@@ -115,6 +115,23 @@ impl Handler for ClientHandler {
         Ok(())
     }
 
+    // User pressed a key → raw terminal bytes arrive here.
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        // `q` (0x71) or Ctrl+C (0x03) → close the channel.
+        // Closing tears down the connection, which drops the handler,
+        // which logs [disconnect] via our existing Drop impl.
+        if data.contains(&b'q') || data.contains(&0x03) {
+            session.close(channel)?;
+        }
+        Ok(())
+    }
+
+
     // 4) User resized their window → resize + redraw.
     async fn window_change_request(
         &mut self,
