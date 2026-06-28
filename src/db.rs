@@ -242,6 +242,20 @@ pub async fn insert_post(pool: &SqlitePool, author_id: i64, title: &str, body: &
     Ok(())
 }
 
+/// Delete a post and all of its comments (cascade).
+pub async fn delete_post(pool: &SqlitePool, post_id: i64) -> Result<(), sqlx::Error> {
+    // Remove the post's comments first, then the post itself.
+    sqlx::query("DELETE FROM comments WHERE post_id = ?")
+        .bind(post_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM posts WHERE id = ?")
+        .bind(post_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // ── Comments ───────────────────────────────────────────────────────────────
 
 /// Fetch all comments on a post (oldest first), each with its author's name.

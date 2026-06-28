@@ -48,10 +48,9 @@ src/
 └── db.rs      Database layer: SQLite pool init, schema, row structs, queries, seed data
 
 docs/
-├── architecture.md                      (this file)
-├── handoff.md                           session-to-session pickup doc
-├── project-context.md                   original project brief
+├── architecture.md                      (this file — the canonical project reference)
 ├── shplank-current-application-flow.md  detailed code-flow study doc
+├── step-6-7-plan.md                      implementation plan for build steps 6–7
 └── rust-cheatsheet.md                   language reference
 ```
 
@@ -117,8 +116,9 @@ the right moments. The lifecycle of one connection:
 
 The `data` handler dispatches on the current `Screen`:
 - **`List`** — arrow keys move the selection; Enter opens the post (lazily loading
-  its comments); `n` starts a new post.
-- **`Detail`** — `b`/Escape return to the list; `c` starts a comment on this post.
+  its comments); `n` starts a new post; `d` deletes the selected post (admins only).
+- **`Detail`** — `b`/Escape return to the list; `c` starts a comment on this post;
+  `d` deletes this post (admins only).
 - **`ComposePost` / `ComposeComment`** — typed bytes edit the buffers; Enter
   advances/newlines; Ctrl+D inserts into the DB and reloads; Esc cancels.
 - **`SetName`** — a first-time visitor types a display name; Enter creates the
@@ -161,8 +161,15 @@ between those two worlds.
   fingerprint is looked up in the `users` table on `shell_request`: a known key
   loads its user; a new key is prompted for a display name (`Screen::SetName`),
   which creates the row. Posts/comments are attributed to `current_user_id`.
-  (Admin moderation — a hardcoded admin fingerprint with delete powers — is
-  deferred to a later step.)
+
+- **Admin moderation via a hardcoded fingerprint.** A single `ADMIN_FINGERPRINT`
+  constant in `server.rs` names the one key allowed to delete; `is_admin()`
+  compares the connection's fingerprint against it. Admins press `d` (in the list
+  or a post's detail) to delete that post, which cascades to its comments
+  (`db::delete_post`). The fingerprint is safe to commit — it's a hash of a
+  *public* key, an identifier not a credential; the SSH handshake still requires
+  the matching private key. Moving it to config / a `users.is_admin` column
+  (so admins change without recompiling) is a possible later refinement.
 
 - **One draw path (`redraw()`).** All rendering goes through a single
   `ClientHandler::redraw()` method that matches on `screen` and calls the right
@@ -225,7 +232,8 @@ Build order from the project plan, with current status:
 | 4    | Post detail view — title + body; list ↔ detail nav    | ✅ Done      |
 | 5    | Comments — table + render under a post                | ✅ Done      |
 | 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
-| 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done (admin moderation deferred) |
+| 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done |
+| 7b   | Admin moderation — hardcoded admin fingerprint; `d` deletes a post (cascades to comments) | ✅ Done |
 | 8    | Polish — keybindings, help/status bar, empty states, error handling | ⏳ Next |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 
@@ -248,7 +256,9 @@ name; after that the key goes straight to the list. You should see a cyan-border
 `shPlank` box listing the seeded posts. Arrow keys move the selection, **Enter**
 opens a post (title + body + comments), **`n`** writes a new post, **`c`** (in a
 post) writes a comment — **Ctrl+D** submits, **Esc** cancels. **`b`**/Escape
-returns to the list, and **`q`**/**Ctrl+C** disconnects cleanly. The server
+returns to the list, and **`q`**/**Ctrl+C** disconnects cleanly. If you connect
+with the admin key (the one matching `ADMIN_FINGERPRINT`), **`d`** deletes the
+selected/open post and its comments. The server
 terminal logs `[connect] / [auth] / [disconnect]`. You can also `Ctrl+C` the
 server process to stop the listener entirely.
 

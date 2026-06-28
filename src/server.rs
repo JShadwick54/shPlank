@@ -16,6 +16,9 @@ use crate::db::{Comment, Post};
 
 use crate::tui::{TerminalHandle, ComposeField};
 
+/// The one key allowed to delete posts. Paste your admin key's SHA256
+/// fingerprint here (shown in the [auth] log line when you connect).
+const ADMIN_FINGERPRINT: &str = "SHA256:RjeIqmh9r8vQiD1OZTV7g3aKXmHpC/4YsF+moSXt0QM";
 
 /// Which screen the client is currently viewing. The `usize` payloads index
 /// into `ClientHandler.posts` (the post being viewed / commented on).
@@ -121,6 +124,11 @@ impl ClientHandler {
             ComposeField::Title => push_printable(&mut self.compose_title, data),
             ComposeField::Body => push_printable(&mut self.compose_body, data),
         }
+    }
+
+    /// True if this connection's key matches the hardcoded admin fingerprint.
+    fn is_admin(&self) -> bool {
+        self.fingerprint.as_deref() == Some(ADMIN_FINGERPRINT)
     }
 }
 
@@ -231,17 +239,32 @@ impl Handler for ClientHandler {
 
         match self.screen {
             Screen::List => {
-                // q quits — but only here, never while composing.
                 if data == b"q" {
                     session.close(channel)?;
                     return Ok(());
                 }
-                // n starts a new post (works even if the list is empty).
                 if data == b"n" {
                     self.compose_title.clear();
                     self.compose_body.clear();
                     self.compose_field = ComposeField::Title;
                     self.screen = Screen::ComposePost;
+                } else if data == b"d" && self.is_admin() {
+                    // Admin: delete the selected post (and its comments).
+                    let len = self.posts.len();
+                    if len > 0 {
+                        let selected = self.list_state.selected().unwrap_or(0);
+                        let post_id = self.posts[selected].id;
+                        if let Err(e) = crate::db::delete_post(&self.db, post_id).await {
+                            eprintln!("[db] failed to delete post: {e}");
+                        }
+                        self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
+                        // Keep the selection in range after removal.
+                        if self.posts.is_empty() {
+                            self.list_state.select(None);
+                        } else {
+                            self.list_state.select(Some(selected.min(self.posts.len() - 1)));
+                        }
+                    }
                 } else {
                     let len = self.posts.len();
                     if len > 0 {
@@ -272,10 +295,22 @@ impl Handler for ClientHandler {
                 if data == b"b" || data == b"\x1b" {
                     self.screen = Screen::List;
                 } else if data == b"c" {
-                    // c starts a comment on the post we're viewing.
                     self.compose_body.clear();
                     self.compose_field = ComposeField::Body;
                     self.screen = Screen::ComposeComment(i);
+                } else if data == b"d" && self.is_admin() {
+                    // Admin: delete this post (and its comments), return to list.
+                    let post_id = self.posts[i].id;
+                    if let Err(e) = crate::db::delete_post(&self.db, post_id).await {
+                        eprintln!("[db] failed to delete post: {e}");
+                    }
+                    self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
+                    if self.posts.is_empty() {
+                        self.list_state.select(None);
+                    } else {
+                        self.list_state.select(Some(i.min(self.posts.len() - 1)));
+                    }
+                    self.screen = Screen::List;
                 }
             }
 
