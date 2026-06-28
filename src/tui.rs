@@ -18,12 +18,17 @@ pub enum ComposeField {
     Body,
 }
 
+/// Width of the right-hand command sidebar, in columns.
+pub const SIDEBAR_WIDTH: u16 = 24;
+/// Maximum display-name length, in characters.
+pub const MAX_NAME_LEN: usize = 24;
+
 /// Split the frame into a main content area (left) and a command sidebar
 /// (right), render the sidebar, and return the main area to draw into.
 fn split_with_sidebar(frame: &mut ratatui::Frame, commands: &[(&str, &str)]) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(24)])
+        .constraints([Constraint::Min(0), Constraint::Length(SIDEBAR_WIDTH)])
         .split(frame.area());
 
     draw_sidebar(frame, chunks[1], commands);
@@ -175,36 +180,38 @@ pub fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut Li
     }
     let main = split_with_sidebar(frame, &commands);
 
+    let block = Block::default()
+        .title(" shPlank ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    // Empty state: no posts yet.
+    if posts.is_empty() {
+        let empty = Paragraph::new("No posts yet — press  n  to write the first one.")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center)
+            .block(block);
+        frame.render_widget(empty, main);
+        return;
+    }
+
     let items: Vec<ListItem> = posts
         .iter()
         .map(|p| ListItem::new(p.title.clone()))
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" shPlank ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
+        .block(block)
         .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(list, main, list_state);  // `main`, not frame.area()
 }
 
-/// A single post: title, author, body, and its comments below.
-pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment], is_admin: bool) {
-    let mut commands: Vec<(&str, &str)> = vec![
-        ("b", "back"),
-        ("c", "comment"),
-        ("q", "quit"),
-    ];
-    if is_admin {
-        commands.push(("d", "delete"));
-    }
-    let main = split_with_sidebar(frame, &commands);
-
+/// Build the lines that make up a post's detail view (title, author, body,
+/// comments). Shared by `draw_detail` (rendering) and `detail_max_scroll`
+/// (computing how far the view can scroll).
+fn detail_lines<'a>(post: &'a Post, comments: &'a [Comment]) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD))),
         Line::styled(format!("by {}", post.author_name), Style::default().fg(Color::DarkGray)),
@@ -237,14 +244,51 @@ pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]
         }
     }
 
-    let paragraph = Paragraph::new(lines)
+    lines
+}
+
+/// How far the detail view can scroll down (in rows), so the caller can clamp
+/// the scroll offset. Estimates wrapped rows from each line's display width
+/// (the exact wrap count needs an unstable ratatui API, so on heavily-wrapped
+/// text this can be off by a line or two).
+pub fn detail_max_scroll(post: &Post, comments: &[Comment], term_cols: u16, term_rows: u16) -> u16 {
+    let content_width = term_cols.saturating_sub(SIDEBAR_WIDTH + 2).max(1) as usize; // minus sidebar + borders
+    let content_height = term_rows.saturating_sub(2).max(1) as usize;                // minus borders
+
+    let total_rows: usize = detail_lines(post, comments)
+        .iter()
+        .map(|line| {
+            let w = line.width().max(1);
+            (w + content_width - 1) / content_width // ceil(width / content_width)
+        })
+        .sum();
+
+    total_rows.saturating_sub(content_height) as u16
+}
+
+/// A single post: title, author, body, and its comments below. `scroll` is the
+/// vertical row offset, for paging through long posts.
+pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment], is_admin: bool, scroll: u16) {
+    let mut commands: Vec<(&str, &str)> = vec![
+        ("↑/↓", "scroll"),
+        ("b", "back"),
+        ("c", "comment"),
+        ("q", "quit"),
+    ];
+    if is_admin {
+        commands.push(("d", "delete"));
+    }
+    let main = split_with_sidebar(frame, &commands);
+
+    let paragraph = Paragraph::new(detail_lines(post, comments))
         .block(
             Block::default()
                 .title(" shPlank ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
 
     frame.render_widget(paragraph, main);
 }
@@ -312,13 +356,33 @@ pub fn draw_set_name(frame: &mut ratatui::Frame, name: &str) {
         ("Ctrl+C", "disconnect"),
     ]);
 
-    let lines: Vec<Line> = vec![
+    let trimmed_len = name.trim().chars().count();
+
+    let mut lines: Vec<Line> = vec![
         Line::styled("Welcome to shPlank!", Style::default().add_modifier(Modifier::BOLD)),
         Line::raw(""),
         Line::raw("Choose a display name (shown on your posts and comments):"),
         Line::raw(""),
         Line::styled(format!("▶ {}", name), Style::default().fg(Color::Cyan)),
+        Line::raw(""),
+        Line::styled(
+            format!("{trimmed_len}/{MAX_NAME_LEN} characters"),
+            Style::default().fg(Color::DarkGray),
+        ),
     ];
+
+    // Live validation feedback.
+    if trimmed_len > MAX_NAME_LEN {
+        lines.push(Line::styled(
+            "Too long — shorten it to confirm.",
+            Style::default().fg(Color::Red),
+        ));
+    } else if trimmed_len == 0 {
+        lines.push(Line::styled(
+            "Enter at least one character.",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(

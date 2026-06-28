@@ -68,11 +68,13 @@ docs/
   - `ClientHandler` — the *per-connection brain*. Holds that client's state:
     `id`, captured key `fingerprint`, resolved `current_user_id`, its ratatui
     `terminal`, a clone of the `db` pool, the loaded `posts` + `comments`, the
-    `list_state` (selection), the current `screen`, and the compose buffers
-    (`compose_title` / `compose_body` / `compose_field`). russh calls its methods
-    as SSH events occur. `impl Drop` logs disconnects. Its `redraw()` method is
-    the single place that draws — every event handler calls it after updating
-    state, and it dispatches on `screen` to the right `tui::draw_*` function.
+    `list_state` (selection), the current `screen`, the compose buffers
+    (`compose_title` / `compose_body` / `compose_field`), the `detail_scroll`
+    offset, and the last-known `term_cols` / `term_rows` (for scroll math). russh
+    calls its methods as SSH events occur. `impl Drop` logs disconnects. Its
+    `redraw()` method is the single place that draws — every event handler calls
+    it after updating state, and it dispatches on `screen` to the right
+    `tui::draw_*` function.
   - `Screen` — an enum tracking which view the client is on: `List`,
     `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`, and
     `ConfirmDelete { index, from_detail }` (the delete-confirmation modal). The
@@ -87,13 +89,21 @@ docs/
   - `draw_list` / `draw_detail` / `draw_compose_post` / `draw_compose_comment` /
     `draw_set_name` — one function per screen, each describing a full frame.
     `server.rs::redraw()` picks which one to call based on the current `Screen`.
+    `draw_list` shows an empty-state placeholder when there are no posts;
+    `draw_set_name` shows a live character count + over-limit / empty warnings.
+  - `detail_lines()` / `detail_max_scroll()` — `detail_lines` builds the detail
+    view's text (shared by rendering and scroll math); `detail_max_scroll`
+    estimates how far it can scroll given the terminal size, so `data()` can clamp
+    `detail_scroll`. `draw_detail` applies the offset via `Paragraph::scroll`.
   - `split_with_sidebar()` / `draw_sidebar()` — each screen reserves a right-hand
-    column for a ` Commands ` panel listing that screen's keys, and renders its
-    content into the remaining area. (The admin-only `d delete` entry shows only
-    when `is_admin` is passed in.)
+    column (`SIDEBAR_WIDTH`) for a ` Commands ` panel listing that screen's keys,
+    and renders its content into the remaining area. (The admin-only `d delete`
+    entry shows only when `is_admin` is passed in.)
   - `centered_rect()` / `draw_confirm_popup()` — modal support: a centered
     sub-rectangle, wiped with the `Clear` widget, holding the delete-confirmation
     box. Drawn *over* the underlying screen for `Screen::ConfirmDelete`.
+  - Constants: `SIDEBAR_WIDTH` (command-panel columns), `MAX_NAME_LEN`
+    (display-name cap, also enforced in `data()`).
 
 - **`db.rs`** — the database layer: `init()` (open pool + create the `users` /
   `posts` / `comments` tables), `seed_if_empty()` (dev seed data, incl. the
@@ -125,8 +135,9 @@ the right moments. The lifecycle of one connection:
 The `data` handler dispatches on the current `Screen`:
 - **`List`** — arrow keys move the selection; Enter opens the post (lazily loading
   its comments); `n` starts a new post; `d` opens the delete-confirm modal (admins).
-- **`Detail`** — `b`/Escape return to the list; `c` starts a comment on this post;
-  `d` opens the delete-confirm modal (admins).
+- **`Detail`** — ↑/↓ scroll the post (clamped to the content); `b`/Escape return to
+  the list; `c` starts a comment on this post; `d` opens the delete-confirm modal
+  (admins).
 - **`ConfirmDelete`** — Enter or `d` confirms (deletes the post + its comments,
   reloads, returns to the list); Esc cancels back to where it was opened; other
   keys are ignored.
@@ -245,7 +256,7 @@ Build order from the project plan, with current status:
 | 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
 | 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done |
 | 7b   | Admin moderation — hardcoded admin fingerprint; `d` deletes a post (cascades to comments) | ✅ Done |
-| 8    | Polish — command sidebar ✅, delete confirmation ✅; remaining: empty states, detail scrolling, name validation, error handling | ⏳ In progress |
+| 8    | Polish — command sidebar ✅, delete confirmation ✅, empty states ✅, detail scrolling ✅, name validation ✅; remaining: dropped-connection / error handling | ⏳ In progress |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 
 ---

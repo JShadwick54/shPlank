@@ -63,6 +63,9 @@ impl Server for AppServer {
             compose_body: String::new(),
             compose_field: ComposeField::Body,
             current_user_id: None,
+            detail_scroll: 0,
+            term_cols: 80,
+            term_rows: 24,
         }
     }
 }
@@ -82,6 +85,9 @@ pub struct ClientHandler {
     compose_body: String,
     compose_field: ComposeField,
     current_user_id: Option<i64>,
+    detail_scroll: u16,      // vertical scroll offset in the detail view
+    term_cols: u16,          // last-known client terminal size, for scroll math
+    term_rows: u16,
 }
 
 impl ClientHandler {
@@ -91,6 +97,7 @@ impl ClientHandler {
     /// `&mut self.terminal` borrow (a method call here would borrow all of self).
     fn redraw(&mut self) -> Result<(), russh::Error> {
         let is_admin = self.is_admin();
+        let detail_scroll = self.detail_scroll;
         if let Some(terminal) = self.terminal.as_mut() {
             let posts = &self.posts;
             let comments = &self.comments;
@@ -104,7 +111,7 @@ impl ClientHandler {
                     Screen::List => crate::tui::draw_list(frame, posts, list_state, is_admin),
                     Screen::Detail(i) => {
                         if let Some(p) = posts.get(i) {
-                            crate::tui::draw_detail(frame, p, comments, is_admin);
+                            crate::tui::draw_detail(frame, p, comments, is_admin, detail_scroll);
                         }
                     }
                     Screen::ComposePost => {
@@ -120,7 +127,7 @@ impl ClientHandler {
                         // Draw the screen we came from, then the popup on top of it.
                         if from_detail {
                             if let Some(p) = posts.get(index) {
-                                crate::tui::draw_detail(frame, p, comments, is_admin);
+                                crate::tui::draw_detail(frame, p, comments, is_admin, detail_scroll);
                             }
                         } else {
                             crate::tui::draw_list(frame, posts, list_state, is_admin);
@@ -189,6 +196,8 @@ impl Handler for ClientHandler {
         _modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.term_cols = col_width as u16;
+        self.term_rows = row_height as u16;
         let rect = Rect::new(0, 0, col_width as u16, row_height as u16);
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.resize(rect)?;
@@ -279,6 +288,7 @@ impl Handler for ClientHandler {
                             self.list_state.select(Some((selected + 1).min(len - 1)));
                         } else if data == b"\r" {
                             self.screen = Screen::Detail(selected);
+                            self.detail_scroll = 0;
                             self.comments = match crate::db::list_comments(&self.db, self.posts[selected].id).await {
                                 Ok(comments) => comments,
                                 Err(e) => {
@@ -298,6 +308,17 @@ impl Handler for ClientHandler {
                 }
                 if data == b"b" || data == b"\x1b" {
                     self.screen = Screen::List;
+                } else if data == b"\x1b[A" || data == b"\x1bOA" {
+                    // Scroll up.
+                    self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                } else if data == b"\x1b[B" || data == b"\x1bOB" {
+                    // Scroll down, clamped so we don't scroll past the content.
+                    if let Some(post) = self.posts.get(i) {
+                        let max = crate::tui::detail_max_scroll(post, &self.comments, self.term_cols, self.term_rows);
+                        if self.detail_scroll < max {
+                            self.detail_scroll += 1;
+                        }
+                    }
                 } else if data == b"c" {
                     self.compose_body.clear();
                     self.compose_field = ComposeField::Body;
@@ -383,7 +404,9 @@ impl Handler for ClientHandler {
             Screen::SetName => {
                 if data == b"\r" || data == b"\x04" {
                     let name = self.compose_body.trim().to_string();
-                    if !name.is_empty() {
+                    // Require a non-empty name within the length cap; otherwise the
+                    // submit is ignored and the on-screen warning guides the user.
+                    if !name.is_empty() && name.chars().count() <= crate::tui::MAX_NAME_LEN {
                         let fp = self.fingerprint.clone().unwrap_or_default();
                         match crate::db::create_user(&self.db, &fp, &name).await {
                             Ok(id) => {
@@ -413,6 +436,8 @@ impl Handler for ClientHandler {
         _pix_height: u32,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.term_cols = col_width as u16;
+        self.term_rows = row_height as u16;
         let rect = Rect::new(0, 0, col_width as u16, row_height as u16);
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.resize(rect)?;
