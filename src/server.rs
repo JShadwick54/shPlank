@@ -29,6 +29,9 @@ enum Screen {
     ComposePost,            // writing a new post (title + body)
     ComposeComment(usize),  // writing a comment on posts[usize]
     SetName,                // first-time visitor choosing a display name
+    // admin confirming deletion of posts[index]; `from_detail` remembers whether
+    // we opened the prompt from the detail view (so Cancel returns there).
+    ConfirmDelete { index: usize, from_detail: bool },
 }
 
 
@@ -87,6 +90,7 @@ impl ClientHandler {
     /// are pulled out as *direct field* borrows so they stay disjoint from the
     /// `&mut self.terminal` borrow (a method call here would borrow all of self).
     fn redraw(&mut self) -> Result<(), russh::Error> {
+        let is_admin = self.is_admin();
         if let Some(terminal) = self.terminal.as_mut() {
             let posts = &self.posts;
             let comments = &self.comments;
@@ -97,10 +101,10 @@ impl ClientHandler {
             let screen = self.screen;
             terminal.draw(|frame| {
                 match screen {
-                    Screen::List => crate::tui::draw_list(frame, posts, list_state),
+                    Screen::List => crate::tui::draw_list(frame, posts, list_state, is_admin),
                     Screen::Detail(i) => {
                         if let Some(p) = posts.get(i) {
-                            crate::tui::draw_detail(frame, p, comments);
+                            crate::tui::draw_detail(frame, p, comments, is_admin);
                         }
                     }
                     Screen::ComposePost => {
@@ -111,6 +115,17 @@ impl ClientHandler {
                     }
                     Screen::SetName => {
                         crate::tui::draw_set_name(frame, compose_body);
+                    }
+                    Screen::ConfirmDelete { index, from_detail } => {
+                        // Draw the screen we came from, then the popup on top of it.
+                        if from_detail {
+                            if let Some(p) = posts.get(index) {
+                                crate::tui::draw_detail(frame, p, comments, is_admin);
+                            }
+                        } else {
+                            crate::tui::draw_list(frame, posts, list_state, is_admin);
+                        }
+                        crate::tui::draw_confirm_popup(frame);
                     }
                 }
             })?;
@@ -249,21 +264,10 @@ impl Handler for ClientHandler {
                     self.compose_field = ComposeField::Title;
                     self.screen = Screen::ComposePost;
                 } else if data == b"d" && self.is_admin() {
-                    // Admin: delete the selected post (and its comments).
-                    let len = self.posts.len();
-                    if len > 0 {
+                    // Admin: open the delete-confirmation prompt for the selection.
+                    if !self.posts.is_empty() {
                         let selected = self.list_state.selected().unwrap_or(0);
-                        let post_id = self.posts[selected].id;
-                        if let Err(e) = crate::db::delete_post(&self.db, post_id).await {
-                            eprintln!("[db] failed to delete post: {e}");
-                        }
-                        self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
-                        // Keep the selection in range after removal.
-                        if self.posts.is_empty() {
-                            self.list_state.select(None);
-                        } else {
-                            self.list_state.select(Some(selected.min(self.posts.len() - 1)));
-                        }
+                        self.screen = Screen::ConfirmDelete { index: selected, from_detail: false };
                     }
                 } else {
                     let len = self.posts.len();
@@ -299,19 +303,33 @@ impl Handler for ClientHandler {
                     self.compose_field = ComposeField::Body;
                     self.screen = Screen::ComposeComment(i);
                 } else if data == b"d" && self.is_admin() {
-                    // Admin: delete this post (and its comments), return to list.
-                    let post_id = self.posts[i].id;
-                    if let Err(e) = crate::db::delete_post(&self.db, post_id).await {
-                        eprintln!("[db] failed to delete post: {e}");
-                    }
-                    self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
-                    if self.posts.is_empty() {
-                        self.list_state.select(None);
-                    } else {
-                        self.list_state.select(Some(i.min(self.posts.len() - 1)));
+                    // Admin: open the delete-confirmation prompt for this post.
+                    self.screen = Screen::ConfirmDelete { index: i, from_detail: true };
+                }
+            }
+
+            Screen::ConfirmDelete { index, from_detail } => {
+                if data == b"\r" || data == b"d" {
+                    // Confirm (Enter or d again): delete the post + its comments.
+                    let post_id = self.posts.get(index).map(|p| p.id);
+                    if let Some(post_id) = post_id {
+                        if let Err(e) = crate::db::delete_post(&self.db, post_id).await {
+                            eprintln!("[db] failed to delete post: {e}");
+                        }
+                        self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
+                        // Keep the selection in range after removal.
+                        if self.posts.is_empty() {
+                            self.list_state.select(None);
+                        } else {
+                            self.list_state.select(Some(index.min(self.posts.len() - 1)));
+                        }
                     }
                     self.screen = Screen::List;
+                } else if data == b"\x1b" {
+                    // Cancel (Esc): return to wherever we opened the prompt from.
+                    self.screen = if from_detail { Screen::Detail(index) } else { Screen::List };
                 }
+                // Any other key: ignored — the popup stays until an explicit choice.
             }
 
             Screen::ComposePost => {

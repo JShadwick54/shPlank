@@ -74,7 +74,8 @@ docs/
     the single place that draws — every event handler calls it after updating
     state, and it dispatches on `screen` to the right `tui::draw_*` function.
   - `Screen` — an enum tracking which view the client is on: `List`,
-    `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`. The
+    `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`, and
+    `ConfirmDelete { index, from_detail }` (the delete-confirmation modal). The
     `usize` payloads index into `posts`.
   - `push_printable()` / `edit_field()` — translate raw input bytes into edits on
     the compose buffers (printable ASCII appends, Backspace deletes).
@@ -86,6 +87,13 @@ docs/
   - `draw_list` / `draw_detail` / `draw_compose_post` / `draw_compose_comment` /
     `draw_set_name` — one function per screen, each describing a full frame.
     `server.rs::redraw()` picks which one to call based on the current `Screen`.
+  - `split_with_sidebar()` / `draw_sidebar()` — each screen reserves a right-hand
+    column for a ` Commands ` panel listing that screen's keys, and renders its
+    content into the remaining area. (The admin-only `d delete` entry shows only
+    when `is_admin` is passed in.)
+  - `centered_rect()` / `draw_confirm_popup()` — modal support: a centered
+    sub-rectangle, wiped with the `Clear` widget, holding the delete-confirmation
+    box. Drawn *over* the underlying screen for `Screen::ConfirmDelete`.
 
 - **`db.rs`** — the database layer: `init()` (open pool + create the `users` /
   `posts` / `comments` tables), `seed_if_empty()` (dev seed data, incl. the
@@ -116,9 +124,12 @@ the right moments. The lifecycle of one connection:
 
 The `data` handler dispatches on the current `Screen`:
 - **`List`** — arrow keys move the selection; Enter opens the post (lazily loading
-  its comments); `n` starts a new post; `d` deletes the selected post (admins only).
+  its comments); `n` starts a new post; `d` opens the delete-confirm modal (admins).
 - **`Detail`** — `b`/Escape return to the list; `c` starts a comment on this post;
-  `d` deletes this post (admins only).
+  `d` opens the delete-confirm modal (admins).
+- **`ConfirmDelete`** — Enter or `d` confirms (deletes the post + its comments,
+  reloads, returns to the list); Esc cancels back to where it was opened; other
+  keys are ignored.
 - **`ComposePost` / `ComposeComment`** — typed bytes edit the buffers; Enter
   advances/newlines; Ctrl+D inserts into the DB and reloads; Esc cancels.
 - **`SetName`** — a first-time visitor types a display name; Enter creates the
@@ -234,7 +245,7 @@ Build order from the project plan, with current status:
 | 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
 | 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done |
 | 7b   | Admin moderation — hardcoded admin fingerprint; `d` deletes a post (cascades to comments) | ✅ Done |
-| 8    | Polish — keybindings, help/status bar, empty states, error handling | ⏳ Next |
+| 8    | Polish — command sidebar ✅, delete confirmation ✅; remaining: empty states, detail scrolling, name validation, error handling | ⏳ In progress |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 
 ---
@@ -257,10 +268,12 @@ name; after that the key goes straight to the list. You should see a cyan-border
 opens a post (title + body + comments), **`n`** writes a new post, **`c`** (in a
 post) writes a comment — **Ctrl+D** submits, **Esc** cancels. **`b`**/Escape
 returns to the list, and **`q`**/**Ctrl+C** disconnects cleanly. If you connect
-with the admin key (the one matching `ADMIN_FINGERPRINT`), **`d`** deletes the
-selected/open post and its comments. The server
-terminal logs `[connect] / [auth] / [disconnect]`. You can also `Ctrl+C` the
-server process to stop the listener entirely.
+with the admin key (the one matching `ADMIN_FINGERPRINT`), **`d`** opens a
+confirmation popup to delete the selected/open post (and its comments). The
+available keys for the current screen are always shown in the on-screen
+` Commands ` panel on the right. The server terminal logs
+`[connect] / [auth] / [disconnect]`. You can also `Ctrl+C` the server process to
+stop the listener entirely.
 
 To test as a different user, generate a second key and connect with it (each key
 is a separate identity):
