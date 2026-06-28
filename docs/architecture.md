@@ -70,17 +70,22 @@ docs/
     `terminal`, a clone of the `db` pool, the loaded `posts` + `comments`, the
     `list_state` (selection), the current `screen`, the compose buffers
     (`compose_title` / `compose_body` / `compose_field`), the `detail_scroll`
-    offset, and the last-known `term_cols` / `term_rows` (for scroll math). russh
-    calls its methods as SSH events occur. `impl Drop` logs disconnects. Its
-    `redraw()` method is the single place that draws — every event handler calls
-    it after updating state, and it dispatches on `screen` to the right
-    `tui::draw_*` function.
+    offset, the last-known `term_cols` / `term_rows` (for scroll math), and a
+    `clean_exit` flag. russh calls its methods as SSH events occur. Its `redraw()`
+    method is the single place that draws — every event handler calls it after
+    updating state, and it dispatches on `screen` to the right `tui::draw_*`
+    function. `impl Drop` logs disconnects, distinguishing a deliberate quit
+    (`clean_exit == true`) from a dropped link.
   - `Screen` — an enum tracking which view the client is on: `List`,
-    `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`, and
-    `ConfirmDelete { index, from_detail }` (the delete-confirmation modal). The
-    `usize` payloads index into `posts`.
+    `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`,
+    `ConfirmDelete { index, from_detail }` (delete-confirmation modal), and
+    `ConfirmQuit { index, from_detail }` (quit-confirmation modal). The `usize`
+    payloads index into `posts`.
   - `push_printable()` / `edit_field()` — translate raw input bytes into edits on
     the compose buffers (printable ASCII appends, Backspace deletes).
+  - `reset_client_screen()` — on a deliberate quit, sends a clear-screen / show-
+    cursor escape sequence so the client's terminal isn't left painted with the
+    last frame under its shell prompt.
 
 - **`tui.rs`** — everything about producing screen output:
   - `TerminalHandle` — adapter implementing `std::io::Write`. ratatui writes
@@ -99,9 +104,10 @@ docs/
     column (`SIDEBAR_WIDTH`) for a ` Commands ` panel listing that screen's keys,
     and renders its content into the remaining area. (The admin-only `d delete`
     entry shows only when `is_admin` is passed in.)
-  - `centered_rect()` / `draw_confirm_popup()` — modal support: a centered
-    sub-rectangle, wiped with the `Clear` widget, holding the delete-confirmation
-    box. Drawn *over* the underlying screen for `Screen::ConfirmDelete`.
+  - `centered_rect()` / `draw_modal()` and the `draw_confirm_popup()` /
+    `draw_quit_popup()` wrappers — modal support: a centered sub-rectangle wiped
+    with the `Clear` widget, drawn *over* the underlying screen for
+    `Screen::ConfirmDelete` (red) and `Screen::ConfirmQuit` (yellow).
   - Constants: `SIDEBAR_WIDTH` (command-panel columns), `MAX_NAME_LEN`
     (display-name cap, also enforced in `data()`).
 
@@ -129,18 +135,22 @@ the right moments. The lifecycle of one connection:
 5. Shell request     → shell_request()                 resolves user (or prompts for a name), loads posts, draws
 6. Keystroke         → data()                          routes per-screen, mutates state, redraws
 7. Window resize     → window_change_request()          resizes + redraws
-8. Disconnect        → ClientHandler dropped            Drop logs [disconnect]; bg task exits
+8. Disconnect        → ClientHandler dropped            Drop logs [disconnect] (quit vs dropped); bg task exits
 ```
 
 The `data` handler dispatches on the current `Screen`:
 - **`List`** — arrow keys move the selection; Enter opens the post (lazily loading
-  its comments); `n` starts a new post; `d` opens the delete-confirm modal (admins).
+  its comments); `n` starts a new post; `d` opens the delete-confirm modal (admins);
+  `q` opens the quit-confirm modal.
 - **`Detail`** — ↑/↓ scroll the post (clamped to the content); `b`/Escape return to
   the list; `c` starts a comment on this post; `d` opens the delete-confirm modal
-  (admins).
+  (admins); `q` opens the quit-confirm modal.
 - **`ConfirmDelete`** — Enter or `d` confirms (deletes the post + its comments,
   reloads, returns to the list); Esc cancels back to where it was opened; other
   keys are ignored.
+- **`ConfirmQuit`** — Enter or `q` confirms (resets the client screen and closes
+  the connection); Esc cancels back to where it was opened; other keys are ignored.
+  `Ctrl+C` still disconnects immediately from any screen, bypassing the prompt.
 - **`ComposePost` / `ComposeComment`** — typed bytes edit the buffers; Enter
   advances/newlines; Ctrl+D inserts into the DB and reloads; Esc cancels.
 - **`SetName`** — a first-time visitor types a display name; Enter creates the
@@ -183,6 +193,14 @@ between those two worlds.
   fingerprint is looked up in the `users` table on `shell_request`: a known key
   loads its user; a new key is prompted for a display name (`Screen::SetName`),
   which creates the row. Posts/comments are attributed to `current_user_id`.
+
+- **Disconnect handling.** Dropped connections need no special teardown — russh
+  drops the `ClientHandler` (RAII frees its state) and the render task exits when
+  its channel sender is dropped, so there are no panics or leaks. The polish is in
+  *observability and cleanup*: a `clean_exit` flag lets `Drop` log "quit" vs
+  "connection dropped", and on a deliberate quit we `reset_client_screen()` so the
+  client terminal isn't left painted with the last frame. A truly dropped link
+  can't receive that reset (the channel is already gone) — an accepted limitation.
 
 - **Admin moderation via a hardcoded fingerprint.** A single `ADMIN_FINGERPRINT`
   constant in `server.rs` names the one key allowed to delete; `is_admin()`
@@ -256,7 +274,7 @@ Build order from the project plan, with current status:
 | 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
 | 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done |
 | 7b   | Admin moderation — hardcoded admin fingerprint; `d` deletes a post (cascades to comments) | ✅ Done |
-| 8    | Polish — command sidebar ✅, delete confirmation ✅, empty states ✅, detail scrolling ✅, name validation ✅; remaining: dropped-connection / error handling | ⏳ In progress |
+| 8    | Polish — command sidebar ✅, delete confirmation ✅, empty states ✅, detail scrolling ✅, name validation ✅, quit confirmation ✅, dropped-connection logging + screen reset ✅ | ✅ Done (more polish optional) |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 
 ---

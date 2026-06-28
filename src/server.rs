@@ -32,6 +32,8 @@ enum Screen {
     // admin confirming deletion of posts[index]; `from_detail` remembers whether
     // we opened the prompt from the detail view (so Cancel returns there).
     ConfirmDelete { index: usize, from_detail: bool },
+    // confirming a quit (q); `from_detail`/`index` remember where to return on cancel.
+    ConfirmQuit { index: usize, from_detail: bool },
 }
 
 
@@ -66,6 +68,7 @@ impl Server for AppServer {
             detail_scroll: 0,
             term_cols: 80,
             term_rows: 24,
+            clean_exit: false,
         }
     }
 }
@@ -88,6 +91,7 @@ pub struct ClientHandler {
     detail_scroll: u16,      // vertical scroll offset in the detail view
     term_cols: u16,          // last-known client terminal size, for scroll math
     term_rows: u16,
+    clean_exit: bool,        // true once the user deliberately quit (vs a dropped link)
 }
 
 impl ClientHandler {
@@ -133,6 +137,17 @@ impl ClientHandler {
                             crate::tui::draw_list(frame, posts, list_state, is_admin);
                         }
                         crate::tui::draw_confirm_popup(frame);
+                    }
+                    Screen::ConfirmQuit { index, from_detail } => {
+                        // Draw the screen we came from, then the quit popup on top.
+                        if from_detail {
+                            if let Some(p) = posts.get(index) {
+                                crate::tui::draw_detail(frame, p, comments, is_admin, detail_scroll);
+                            }
+                        } else {
+                            crate::tui::draw_list(frame, posts, list_state, is_admin);
+                        }
+                        crate::tui::draw_quit_popup(frame);
                     }
                 }
             })?;
@@ -255,8 +270,10 @@ impl Handler for ClientHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // Ctrl+C always quits, from any screen (it's not printable text).
+        // Ctrl+C always quits immediately, from any screen (it's not printable text).
         if data.contains(&0x03) {
+            self.clean_exit = true;
+            reset_client_screen(session, channel)?;
             session.close(channel)?;
             return Ok(());
         }
@@ -264,10 +281,9 @@ impl Handler for ClientHandler {
         match self.screen {
             Screen::List => {
                 if data == b"q" {
-                    session.close(channel)?;
-                    return Ok(());
-                }
-                if data == b"n" {
+                    // Ask before leaving the server.
+                    self.screen = Screen::ConfirmQuit { index: 0, from_detail: false };
+                } else if data == b"n" {
                     self.compose_title.clear();
                     self.compose_body.clear();
                     self.compose_field = ComposeField::Title;
@@ -303,10 +319,9 @@ impl Handler for ClientHandler {
 
             Screen::Detail(i) => {
                 if data == b"q" {
-                    session.close(channel)?;
-                    return Ok(());
-                }
-                if data == b"b" || data == b"\x1b" {
+                    // Ask before leaving the server.
+                    self.screen = Screen::ConfirmQuit { index: i, from_detail: true };
+                } else if data == b"b" || data == b"\x1b" {
                     self.screen = Screen::List;
                 } else if data == b"\x1b[A" || data == b"\x1bOA" {
                     // Scroll up.
@@ -348,6 +363,20 @@ impl Handler for ClientHandler {
                     self.screen = Screen::List;
                 } else if data == b"\x1b" {
                     // Cancel (Esc): return to wherever we opened the prompt from.
+                    self.screen = if from_detail { Screen::Detail(index) } else { Screen::List };
+                }
+                // Any other key: ignored — the popup stays until an explicit choice.
+            }
+
+            Screen::ConfirmQuit { index, from_detail } => {
+                if data == b"\r" || data == b"q" {
+                    // Confirm (Enter or q again): leave the server.
+                    self.clean_exit = true;
+                    reset_client_screen(session, channel)?;
+                    session.close(channel)?;
+                    return Ok(());
+                } else if data == b"\x1b" {
+                    // Cancel (Esc): stay, return to where we were.
                     self.screen = if from_detail { Screen::Detail(index) } else { Screen::List };
                 }
                 // Any other key: ignored — the popup stays until an explicit choice.
@@ -447,11 +476,26 @@ impl Handler for ClientHandler {
     }
 }
 
-// Runs automatically when the handler is freed, used here to log a disconnect.
+// Runs automatically when the handler is freed (connection ended). We log
+// whether the user left deliberately or the link dropped unexpectedly.
 impl Drop for ClientHandler {
     fn drop(&mut self) {
-        println!("[disconnect] client #{}", self.id);
+        if self.clean_exit {
+            println!("[disconnect] client #{} (quit)", self.id);
+        } else {
+            println!("[disconnect] client #{} (connection dropped)", self.id);
+        }
     }
+}
+
+/// Send a terminal-reset sequence to the client so its screen is left clean when
+/// we disconnect: reset attributes, clear the screen, home the cursor, and make
+/// the cursor visible again (ratatui hides it while drawing). Without this, the
+/// last-drawn frame stays painted under the user's shell prompt after the session
+/// ends. Best-effort — only possible on a deliberate quit, not a dropped link.
+fn reset_client_screen(session: &mut Session, channel: ChannelId) -> Result<(), russh::Error> {
+    session.data(channel, b"\x1b[0m\x1b[2J\x1b[H\x1b[?25h".to_vec())?;
+    Ok(())
 }
 
 /// Append typed bytes to a text buffer: printable ASCII gets pushed,

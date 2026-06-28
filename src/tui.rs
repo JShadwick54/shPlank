@@ -80,34 +80,56 @@ fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
     horizontal[1]
 }
 
-/// A small modal confirming a post deletion, drawn on top of the current screen.
-pub fn draw_confirm_popup(frame: &mut ratatui::Frame) {
+/// A small centered modal drawn on top of the current screen. `heading` is bold,
+/// `note` is an optional dim subline (skipped if empty), `hint` is the key help,
+/// and `border` colors the box.
+fn draw_modal(frame: &mut ratatui::Frame, title: &str, heading: &str, note: &str, hint: &str, border: Color) {
     let area = centered_rect(50, 35, frame.area());
     frame.render_widget(Clear, area); // wipe whatever's behind the popup
 
-    let lines: Vec<Line> = vec![
+    let mut lines: Vec<Line> = vec![
         Line::raw(""),
-        Line::from(Span::styled(
-            "Delete this post?",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::styled("(its comments go too)", Style::default().fg(Color::DarkGray)),
-        Line::raw(""),
-        Line::styled(
-            "[ Enter / d ] confirm    [ Esc ] cancel",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Line::from(Span::styled(heading, Style::default().add_modifier(Modifier::BOLD))),
     ];
+    if !note.is_empty() {
+        lines.push(Line::styled(note.to_owned(), Style::default().fg(Color::DarkGray)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(hint.to_owned(), Style::default().fg(Color::DarkGray)));
 
     let popup = Paragraph::new(lines)
         .alignment(Alignment::Center)
         .block(
             Block::default()
-                .title(" Confirm Delete ")
+                .title(title.to_owned())
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red)),
+                .border_style(Style::default().fg(border)),
         );
     frame.render_widget(popup, area);
+}
+
+/// Modal confirming a post deletion.
+pub fn draw_confirm_popup(frame: &mut ratatui::Frame) {
+    draw_modal(
+        frame,
+        " Confirm Delete ",
+        "Delete this post?",
+        "(its comments go too)",
+        "[ Enter / d ] confirm    [ Esc ] cancel",
+        Color::Red,
+    );
+}
+
+/// Modal confirming the user wants to disconnect.
+pub fn draw_quit_popup(frame: &mut ratatui::Frame) {
+    draw_modal(
+        frame,
+        " Leave shPlank? ",
+        "Disconnect from the server?",
+        "",
+        "[ Enter / q ] quit    [ Esc ] stay",
+        Color::Yellow,
+    );
 }
 
 /// Bridges ratatui to the SSH channel.
@@ -135,8 +157,10 @@ impl TerminalHandle {
         // the connection closes and this TerminalHandle is freed — then exits.
         tokio::spawn(async move {
             while let Some(data) = receiver.recv().await {
-                if let Err(e) = handle.data(channel_id, data).await {
-                    eprintln!("failed to send data to client: {e:?}");
+                // A send failure here means the channel closed (client disconnected).
+                // That's the normal end of this task — stop quietly; the handler's
+                // Drop logs the disconnect.
+                if handle.data(channel_id, data).await.is_err() {
                     break;
                 }
             }
