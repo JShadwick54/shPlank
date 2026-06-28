@@ -1,5 +1,5 @@
-//! The terminal/rendering layer: turning ratatui's output into bytes on the
-//! SSH channel... and screen-drawing code itself.
+//! The rendering layer: the `TerminalHandle` byte-bridge that carries ratatui's
+//! output over the SSH channel, plus the per-screen `draw_*` functions.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,7 +10,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::db::{Comment, Post};
 
-
+/// Which field of the post composer currently has focus.
 #[derive(Copy, Clone, PartialEq)]
 pub enum ComposeField {
     Title,
@@ -23,7 +23,8 @@ pub enum ComposeField {
 /// `std::io::Write`". Normally that's your local terminal; here it's this
 /// adapter, which forwards those bytes over SSH to the connected client.
 pub struct TerminalHandle {
-    // A queue sender.
+    // A queue sender. `flush` drops a frame's bytes here; the background task
+    // (spawned in `start`) pulls them off and ships them over SSH.
     sender: UnboundedSender<Vec<u8>>,
     // ratatui writes output in many small pieces; we accumulate them here and
     // send the whole batch at once when `flush` is called (once per frame).
@@ -73,17 +74,7 @@ impl std::io::Write for TerminalHandle {
     }
 }
 
-/// Describes the entire screen for one frame. ratatui calls this, diffs the
-/// result against what's already on the client's screen, and sends only the
-/// bytes that changed.
-/// Describes the screen for one frame: the posts as a vertical list.
-pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState, detail: Option<(&Post, &[Comment])>) {
-    match detail {
-        None => draw_list(frame, posts, list_state),
-        Some((post, comments)) => draw_detail(frame, post, comments),
-    }
-}
-
+/// The post list — one row per post, with the selected row highlighted.
 pub fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
     let items: Vec<ListItem> = posts
         .iter()
@@ -103,9 +94,11 @@ pub fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut Li
     frame.render_stateful_widget(list, frame.area(), list_state);
 }
 
+/// A single post: title, author, body, and its comments below.
 pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]) {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD))),
+        Line::styled(format!("by {}", post.author_name), Style::default().fg(Color::DarkGray)),
         Line::raw(""),
     ];
 
@@ -125,6 +118,10 @@ pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]
         ));
         for comment in comments {
             lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                format!("{}:", comment.author_name),
+                Style::default().fg(Color::Cyan),
+            ));
             for line in comment.body.split('\n') {
                 lines.push(Line::raw(line.to_owned()));
             }
@@ -146,6 +143,7 @@ pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]
     frame.render_widget(paragraph, frame.area());
 }
 
+/// The new-post composer: a Title field and a Body field; `field` marks focus.
 pub fn draw_compose_post(frame: &mut ratatui::Frame, title: &str, body: &str, field: ComposeField) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -177,7 +175,7 @@ pub fn draw_compose_post(frame: &mut ratatui::Frame, title: &str, body: &str, fi
     frame.render_widget(paragraph, frame.area());
 }
 
-
+/// The new-comment composer: a single body field.
 pub fn draw_compose_comment(frame: &mut ratatui::Frame, body: &str) {
     let mut lines: Vec<Line> = Vec::new();
     for l in body.split('\n') {
@@ -193,6 +191,32 @@ pub fn draw_compose_comment(frame: &mut ratatui::Frame, body: &str) {
         .block(
             Block::default()
                 .title(" New Comment ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, frame.area());
+}
+
+/// First-connect screen where a new visitor types their display name.
+pub fn draw_set_name(frame: &mut ratatui::Frame, name: &str) {
+    let lines: Vec<Line> = vec![
+        Line::styled("Welcome to shPlank!", Style::default().add_modifier(Modifier::BOLD)),
+        Line::raw(""),
+        Line::raw("Choose a display name (shown on your posts and comments):"),
+        Line::raw(""),
+        Line::styled(format!("▶ {}", name), Style::default().fg(Color::Cyan)),
+        Line::raw(""),
+        Line::styled(
+            "[ Enter ] confirm   [ Ctrl+C ] disconnect",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" New User ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )

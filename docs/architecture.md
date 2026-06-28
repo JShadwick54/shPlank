@@ -17,7 +17,7 @@ by [late.sh](https://github.com/mpiorowski/late-sh).
 ```
   you ──ssh──► shPlank server ──► TUI rendered back over the SSH channel
                     │
-                    └──► SQLite database (posts, comments; users planned)
+                    └──► SQLite database (posts, comments, users)
 ```
 
 ---
@@ -43,9 +43,9 @@ russh + ratatui are wired together **directly** (not via a wrapper like `sshui`)
 ```
 src/
 ├── main.rs    Bootstrap: start the runtime, build config + host key, open DB, run listener
-├── server.rs  SSH layer: AppServer (factory) + ClientHandler (per-connection)
-├── tui.rs     Rendering layer: TerminalHandle (byte bridge) + draw_ui / draw_list / draw_detail
-└── db.rs      Database layer: SQLite pool init, schema, queries, seed data
+├── server.rs  SSH layer: AppServer (factory) + ClientHandler (per-connection) + input routing
+├── tui.rs     Rendering layer: TerminalHandle (byte bridge) + per-screen draw_* functions
+└── db.rs      Database layer: SQLite pool init, schema, row structs, queries, seed data
 
 docs/
 ├── architecture.md                      (this file)
@@ -67,25 +67,35 @@ docs/
     calls `new_client` to mint a handler per connection. Holds the shared
     `SqlitePool`; constructed via `AppServer::new(db)`.
   - `ClientHandler` — the *per-connection brain*. Holds that client's state:
-    `id`, captured key `fingerprint`, its ratatui `terminal`, a clone of the
-    `db` pool, the loaded `posts` + `comments`, the `list_state` (selection),
-    and the current `screen`. russh calls its methods as SSH events occur.
-    `impl Drop` logs disconnects.
-  - `Screen` — an enum (`List` / `Detail(usize)`) tracking which view the client
-    is on; the `usize` indexes into `posts`.
+    `id`, captured key `fingerprint`, resolved `current_user_id`, its ratatui
+    `terminal`, a clone of the `db` pool, the loaded `posts` + `comments`, the
+    `list_state` (selection), the current `screen`, and the compose buffers
+    (`compose_title` / `compose_body` / `compose_field`). russh calls its methods
+    as SSH events occur. `impl Drop` logs disconnects. Its `redraw()` method is
+    the single place that draws — every event handler calls it after updating
+    state, and it dispatches on `screen` to the right `tui::draw_*` function.
+  - `Screen` — an enum tracking which view the client is on: `List`,
+    `Detail(usize)`, `ComposePost`, `ComposeComment(usize)`, `SetName`. The
+    `usize` payloads index into `posts`.
+  - `push_printable()` / `edit_field()` — translate raw input bytes into edits on
+    the compose buffers (printable ASCII appends, Backspace deletes).
 
 - **`tui.rs`** — everything about producing screen output:
   - `TerminalHandle` — adapter implementing `std::io::Write`. ratatui writes
     bytes into it; it forwards them over the SSH channel. This is the bridge
     between ratatui's *synchronous* `Write` interface and russh's *async* send.
-  - `draw_ui(frame, posts, list_state, detail)` — dispatches on `detail`:
-    `None` → `draw_list` (the scrollable post list), `Some((post, comments))` →
-    `draw_detail` (title + body + comments).
+  - `draw_list` / `draw_detail` / `draw_compose_post` / `draw_compose_comment` /
+    `draw_set_name` — one function per screen, each describing a full frame.
+    `server.rs::redraw()` picks which one to call based on the current `Screen`.
 
-- **`db.rs`** — the database layer: `init()` (open pool + create tables),
-  `seed_if_empty()` (dev seed data), `list_posts()`, `list_comments(post_id)`,
-  and the `Post` / `Comment` row structs (`#[derive(FromRow)]`). All queries use
-  runtime `sqlx::query(...)` functions, not the compile-time `query!` macros.
+- **`db.rs`** — the database layer: `init()` (open pool + create the `users` /
+  `posts` / `comments` tables), `seed_if_empty()` (dev seed data, incl. the
+  system user id 1), the `Post` / `Comment` / `User` row structs
+  (`#[derive(FromRow)]`), and queries grouped by entity:
+  `get_user_by_fingerprint()` / `create_user()`, `list_posts()` / `insert_post()`,
+  `list_comments(post_id)` / `insert_comment()`. Posts/comments JOIN `users` to
+  pull the author's display name. All queries use runtime `sqlx::query(...)`
+  functions, not the compile-time `query!` macros.
 
 ---
 
@@ -99,22 +109,30 @@ the right moments. The lifecycle of one connection:
 2. Public-key auth   → ClientHandler::auth_publickey() captures SHA256 fingerprint, accepts
 3. Open session chan → channel_open_session()          builds the ratatui Terminal over the channel
 4. PTY request       → pty_request()                   resizes the terminal to the client's size
-5. Shell request     → shell_request()                 loads posts from DB, draws the list
-6. Keystroke         → data()                          navigation / Enter→detail / b→back / q→quit, redraws
+5. Shell request     → shell_request()                 resolves user (or prompts for a name), loads posts, draws
+6. Keystroke         → data()                          routes per-screen, mutates state, redraws
 7. Window resize     → window_change_request()          resizes + redraws
 8. Disconnect        → ClientHandler dropped            Drop logs [disconnect]; bg task exits
 ```
 
-The `data` handler dispatches on the current `Screen`: in `List`, arrow keys move
-the selection and Enter opens the highlighted post (lazily loading its comments);
-in `Detail`, `b`/Escape return to the list. `q`/Ctrl+C quit from anywhere.
+The `data` handler dispatches on the current `Screen`:
+- **`List`** — arrow keys move the selection; Enter opens the post (lazily loading
+  its comments); `n` starts a new post.
+- **`Detail`** — `b`/Escape return to the list; `c` starts a comment on this post.
+- **`ComposePost` / `ComposeComment`** — typed bytes edit the buffers; Enter
+  advances/newlines; Ctrl+D inserts into the DB and reloads; Esc cancels.
+- **`SetName`** — a first-time visitor types a display name; Enter creates the
+  user row and drops them on the list.
+
+`Ctrl+C` quits from anywhere; `q` quits only from `List`/`Detail` (so it stays
+typeable while composing).
 
 ### The rendering data path
 
 How a frame actually reaches your screen:
 
 ```
-draw_ui(frame)
+redraw() → tui::draw_*(frame, …)
    │  ratatui renders the frame to terminal escape codes
    ▼
 TerminalHandle (impl Write)
@@ -139,9 +157,20 @@ between those two worlds.
 ## 5. Key design decisions
 
 - **Identity = SSH public-key fingerprint.** Captured in `auth_publickey` at
-  connect time (SHA256). No passwords, no signup — your key *is* your account.
-  Currently stored on `ClientHandler.fingerprint`; will be promoted into real
-  `User` rows in Step 7.
+  connect time (SHA256). No passwords, no signup — your key *is* your account. The
+  fingerprint is looked up in the `users` table on `shell_request`: a known key
+  loads its user; a new key is prompted for a display name (`Screen::SetName`),
+  which creates the row. Posts/comments are attributed to `current_user_id`.
+  (Admin moderation — a hardcoded admin fingerprint with delete powers — is
+  deferred to a later step.)
+
+- **One draw path (`redraw()`).** All rendering goes through a single
+  `ClientHandler::redraw()` method that matches on `screen` and calls the right
+  `tui::draw_*`. Handlers just mutate state then call it — no handler builds a
+  frame itself. The method pulls its inputs out as *direct field* borrows so they
+  stay disjoint from the `&mut self.terminal` borrow (calling a `&self` method
+  there would borrow all of `self` and conflict — a borrow-checker lesson baked
+  into the design).
 
 - **Per-client handler model.** Each connection gets its own `ClientHandler`
   with its own terminal and state. (russh's `ratatui_app.rs` example, not the
@@ -196,8 +225,8 @@ Build order from the project plan, with current status:
 | 4    | Post detail view — title + body; list ↔ detail nav    | ✅ Done      |
 | 5    | Comments — table + render under a post                | ✅ Done      |
 | 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
-| 7    | Identity → Users — promote fingerprint to User rows; admin moderation | ⏳ Next |
-| 8    | Polish — keybindings, help/status bar, empty states, error handling | ⬜ Planned |
+| 7    | Identity → Users — promote fingerprint to User rows; author names | ✅ Done (admin moderation deferred) |
+| 8    | Polish — keybindings, help/status bar, empty states, error handling | ⏳ Next |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 
 ---
@@ -214,11 +243,22 @@ Then from another terminal (using a passphrase-less test key to avoid prompts):
 ssh -p 2222 -i ~/.ssh/shplank_test -o IdentitiesOnly=yes localhost
 ```
 
-You should see a cyan-bordered `shPlank` box listing the seeded posts. Arrow keys
-move the selection, **Enter** opens a post (title + body + comments), **`b`** or
-Escape returns to the list, and **`q`** or **Ctrl+C** disconnects cleanly. The
-server terminal logs `[connect] / [auth] / [disconnect]`. You can also `Ctrl+C`
-the server process to stop the listener entirely.
+On a **first** connection with a given key you'll be asked to choose a display
+name; after that the key goes straight to the list. You should see a cyan-bordered
+`shPlank` box listing the seeded posts. Arrow keys move the selection, **Enter**
+opens a post (title + body + comments), **`n`** writes a new post, **`c`** (in a
+post) writes a comment — **Ctrl+D** submits, **Esc** cancels. **`b`**/Escape
+returns to the list, and **`q`**/**Ctrl+C** disconnects cleanly. The server
+terminal logs `[connect] / [auth] / [disconnect]`. You can also `Ctrl+C` the
+server process to stop the listener entirely.
+
+To test as a different user, generate a second key and connect with it (each key
+is a separate identity):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/shplank_test2     # empty passphrase
+ssh -p 2222 -i ~/.ssh/shplank_test2 -o IdentitiesOnly=yes localhost
+```
 
 **Deploy target:** Raspberry Pi 3B (ARM), runs as a systemd service on port 2222,
 local network only. The Pi is a deploy target only — never build on it (1GB RAM).

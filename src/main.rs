@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use russh::server::{Config, Server}; // Server trait brings `run_on_address` into scope
 
-// Declare the other source files as modules of this crate. Without these two
-// lines, `server.rs` and `tui.rs` would simply be ignored by the compiler.
-mod server;
-mod tui;
-mod db;
+// Declare the other source files as modules of this crate. Without these
+// lines, the sibling `.rs` files would simply be ignored by the compiler.
+mod server; // SSH layer
+mod tui;    // rendering layer
+mod db;     // database layer
 
 use crate::server::AppServer;
 
@@ -22,11 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
+    // Open the database, ensure the schema exists, and seed dev data on first run.
     let db = db::init().await?;
     db::seed_if_empty(&db).await?;
     let posts = db::list_posts(&db).await?;
     println!("[db] loaded {} post(s)", posts.len());
 
+    // Hand the pool to the server factory; each connection gets a cheap clone of it.
     let mut server = AppServer::new(db);
     println!("shPlank SSH server listening on 0.0.0.0:2222 — Ctrl-C to stop");
     server.run_on_address(Arc::new(config), ("0.0.0.0", 2222)).await?;

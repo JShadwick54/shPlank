@@ -1,33 +1,61 @@
-//! The database layer: opening the SQLite pool and ensuring the schema exists.
+//! The database layer: the SQLite pool, schema setup, dev seed data, and all
+//! queries. Uses runtime `sqlx::query(...)` functions (not the compile-time
+//! `query!` macros, which would need a live database at build time).
 
-use sqlx::SqlitePool;
+use sqlx::{FromRow, SqlitePool};
 
-use sqlx::FromRow;
+// ── Row structs ────────────────────────────────────────────────────────────
+// Field names match the SELECTed column names so sqlx's `FromRow` can map a
+// row onto the struct automatically (by name, not position).
 
-/// One row of the `posts` table. Field names match the column names
+/// One row of the `posts` table (with the author's name JOINed in).
 #[derive(Debug, FromRow)]
 pub struct Post {
     pub id: i64,
     pub author_id: i64,
+    pub author_name: String,
     pub title: String,
     pub body: String,
     pub created_at: String,
 }
 
-/// One row of the `Comments` table. Field names match the column names
+/// One row of the `comments` table (with the author's name JOINed in).
 #[derive(Debug, FromRow)]
 pub struct Comment {
     pub id: i64,
     pub post_id: i64,
     pub author_id: i64,
+    pub author_name: String,
     pub body: String,
     pub created_at: String,
 }
+
+/// One row of the `users` table. Identity is the SSH key fingerprint.
+#[derive(Debug, FromRow)]
+pub struct User {
+    pub id: i64,
+    pub fingerprint: String,
+    pub display_name: String,
+    pub created_at: String,
+}
+
+// ── Schema & seeding ───────────────────────────────────────────────────────
 
 /// Open the SQLite database (creating the file on first run) and make sure the
 /// schema is in place. Returns the connection pool for the rest of the app to use.
 pub async fn init() -> Result<SqlitePool, sqlx::Error> {
     let pool = SqlitePool::connect("sqlite:shplank.db?mode=rwc").await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id           INTEGER PRIMARY KEY,
+            fingerprint  TEXT    NOT NULL UNIQUE,
+            display_name TEXT    NOT NULL,
+            created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+        .execute(&pool)
+        .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS posts (
@@ -56,15 +84,19 @@ pub async fn init() -> Result<SqlitePool, sqlx::Error> {
     Ok(pool)
 }
 
-
-/// Insert a couple of starter posts — but only when the table is empty, so we
-/// don't pile up duplicates every time the server starts.
+/// Insert starter users/posts/comments — but only when the posts table is empty,
+/// so we don't pile up duplicates every time the server starts. The seed user
+/// (id 1) is inserted first because the seed posts/comments reference it.
 pub async fn seed_if_empty(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM posts")
         .fetch_one(pool)
         .await?;
 
     if count == 0 {
+        sqlx::query("INSERT INTO users (id, fingerprint, display_name) VALUES (1, 'seed', 'shPlank')")
+            .execute(pool)
+            .await?;
+
         sqlx::query("INSERT INTO posts (author_id, title, body) VALUES (?, ?, ?)")
             .bind(1)
             .bind("Welcome to shPlank")
@@ -145,21 +177,51 @@ pub async fn seed_if_empty(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .bind("The disjoint field borrow rule is the thing that trips everyone up. Once you know to reach for individual fields instead of &self methods inside a mutable block, it becomes second nature.")
             .execute(pool)
             .await?;
-
-
     }
 
     Ok(())
 }
 
+// ── Users ──────────────────────────────────────────────────────────────────
 
+/// Look up a user by their SSH key fingerprint. Returns None if no such user
+/// exists yet (i.e. this is a first-time connection from this key).
+pub async fn get_user_by_fingerprint(pool: &SqlitePool, fingerprint: &str)
+                                     -> Result<Option<User>, sqlx::Error>
+{
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, fingerprint, display_name, created_at FROM users WHERE fingerprint = ?",
+    )
+        .bind(fingerprint)
+        .fetch_optional(pool)
+        .await?;
 
-/// Fetch all posts, newest first.
+    Ok(user)
+}
+
+/// Create a new user from a fingerprint + chosen display name.
+/// Returns the new user's id.
+pub async fn create_user(pool: &SqlitePool, fingerprint: &str, display_name: &str)
+                         -> Result<i64, sqlx::Error>
+{
+    let result = sqlx::query("INSERT INTO users (fingerprint, display_name) VALUES (?, ?)")
+        .bind(fingerprint)
+        .bind(display_name)
+        .execute(pool)
+        .await?;
+
+    Ok(result.last_insert_rowid())
+}
+
+// ── Posts ──────────────────────────────────────────────────────────────────
+
+/// Fetch all posts (oldest first), each with its author's display name.
 pub async fn list_posts(pool: &SqlitePool) -> Result<Vec<Post>, sqlx::Error> {
     let posts = sqlx::query_as::<_, Post>(
-        "SELECT id, author_id, title, body, created_at
-         FROM posts
-         ORDER BY created_at ASC, id DESC",
+        "SELECT p.id, p.author_id, u.display_name AS author_name, p.title, p.body, p.created_at
+         FROM posts p
+         JOIN users u ON u.id = p.author_id
+         ORDER BY p.created_at ASC, p.id DESC",
     )
         .fetch_all(pool)
         .await?;
@@ -167,22 +229,7 @@ pub async fn list_posts(pool: &SqlitePool) -> Result<Vec<Post>, sqlx::Error> {
     Ok(posts)
 }
 
-
-pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Comment>, sqlx::Error> {
-    let comments = sqlx::query_as::<_, Comment>(
-        "SELECT id, post_id, author_id, body, created_at
-         FROM comments
-         WHERE post_id = ?
-         ORDER BY created_at ASC, id ASC",
-    )
-        .bind(post_id)
-        .fetch_all(pool)
-        .await?;
-
-    Ok(comments)
-}
-
-
+/// Insert a new post authored by `author_id`.
 pub async fn insert_post(pool: &SqlitePool, author_id: i64, title: &str, body: &str)
                          -> Result<(), sqlx::Error>
 {
@@ -195,6 +242,25 @@ pub async fn insert_post(pool: &SqlitePool, author_id: i64, title: &str, body: &
     Ok(())
 }
 
+// ── Comments ───────────────────────────────────────────────────────────────
+
+/// Fetch all comments on a post (oldest first), each with its author's name.
+pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Comment>, sqlx::Error> {
+    let comments = sqlx::query_as::<_, Comment>(
+        "SELECT c.id, c.post_id, c.author_id, u.display_name AS author_name, c.body, c.created_at
+         FROM comments c
+         JOIN users u ON u.id = c.author_id
+         WHERE c.post_id = ?
+         ORDER BY c.created_at ASC, c.id ASC",
+    )
+        .bind(post_id)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(comments)
+}
+
+/// Insert a new comment on `post_id` authored by `author_id`.
 pub async fn insert_comment(pool: &SqlitePool, post_id: i64, author_id: i64, body: &str)
                             -> Result<(), sqlx::Error>
 {
