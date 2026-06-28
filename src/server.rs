@@ -14,7 +14,7 @@ use russh::{Channel, ChannelId, Pty};
 use sqlx::SqlitePool;
 use crate::db::{Comment, Post};
 
-use crate::tui::{TerminalHandle, draw_ui};
+use crate::tui::{TerminalHandle, ComposeField};
 
 
 /// Which screen the client is currently viewing.
@@ -22,6 +22,8 @@ use crate::tui::{TerminalHandle, draw_ui};
 enum Screen {
     List,
     Detail(usize),
+    ComposePost,
+    ComposeComment(usize), // index into self.posts
 }
 
 
@@ -49,6 +51,9 @@ impl Server for AppServer {
             id, fingerprint: None, terminal: None, db: self.db.clone(),
             posts: Vec::new(), list_state: ListState::default(),
             screen: Screen::List, comments: Vec::new(),
+            compose_title: String::new(),
+            compose_body: String::new(),
+            compose_field: ComposeField::Body,
         }
     }
 }
@@ -64,13 +69,44 @@ pub struct ClientHandler {
     list_state: ListState,
     screen: Screen,
     comments: Vec<Comment>,
+    compose_title: String,
+    compose_body: String,
+    compose_field: ComposeField,
 }
 
 impl ClientHandler {
-    fn current_post(&self) -> Option<&Post> {
-        match self.screen {
-            Screen::List => None,
-            Screen::Detail(i) => self.posts.get(i),
+    fn redraw(&mut self) -> Result<(), russh::Error> {
+        if let Some(terminal) = self.terminal.as_mut() {
+            let posts = &self.posts;
+            let comments = &self.comments;
+            let list_state = &mut self.list_state;
+            let compose_title = &self.compose_title;
+            let compose_body = &self.compose_body;
+            let compose_field = self.compose_field;
+            let screen = self.screen;
+            terminal.draw(|frame| {
+                match screen {
+                    Screen::List => crate::tui::draw_list(frame, posts, list_state),
+                    Screen::Detail(i) => {
+                        if let Some(p) = posts.get(i) {
+                            crate::tui::draw_detail(frame, p, comments);
+                        }
+                    }
+                    Screen::ComposePost => {
+                        crate::tui::draw_compose_post(frame, compose_title, compose_body, compose_field);
+                    }
+                    Screen::ComposeComment(_) => {
+                        crate::tui::draw_compose_comment(frame, compose_body);
+                    }
+                }
+            })?;
+        }
+        Ok(())
+    }
+    fn edit_field(&mut self, data: &[u8]) {
+        match self.compose_field {
+            ComposeField::Title => push_printable(&mut self.compose_title, data),
+            ComposeField::Body => push_printable(&mut self.compose_body, data),
         }
     }
 }
@@ -138,20 +174,12 @@ impl Handler for ClientHandler {
         if !self.posts.is_empty() {
             self.list_state.select(Some(0));
         }
-
-        if let Some(terminal) = self.terminal.as_mut() {
-            let posts = &self.posts;
-            let state = &mut self.list_state;
-            let detail = match self.screen {
-                Screen::List => None,
-                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
-            };
-            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
-        }
+        self.redraw()?;
         session.channel_success(channel)?;
         Ok(())
     }
 
+    // User pressed a key → raw terminal bytes arrive here.
     // User pressed a key → raw terminal bytes arrive here.
     async fn data(
         &mut self,
@@ -159,52 +187,110 @@ impl Handler for ClientHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        // q / Ctrl+C still quit.
-        if data.contains(&b'q') || data.contains(&0x03) {
+        // Ctrl+C always quits, from any screen (it's not printable text).
+        if data.contains(&0x03) {
             session.close(channel)?;
             return Ok(());
         }
 
-        //input
         match self.screen {
             Screen::List => {
-                let len = self.posts.len();
-                if len > 0 {
-                    let selected = self.list_state.selected().unwrap_or(0);
-                    if data == b"\x1b[A" || data == b"\x1bOA" {
-                        self.list_state.select(Some(selected.saturating_sub(1)));
-                    } else if data == b"\x1b[B" || data == b"\x1bOB" {
-                        self.list_state.select(Some((selected + 1).min(len - 1)));
-                    } else if data == b"\r" {
-                        self.screen = Screen::Detail(selected);
-                        self.comments = match crate::db::list_comments(&self.db, self.posts[selected].id).await {
-                            Ok(comments) => comments,
-                            Err(e) => {
-                                eprintln!("[db] failed to load comments: {e}");
-                                Vec::new()
-                            }
-                        };
+                // q quits — but only here, never while composing.
+                if data == b"q" {
+                    session.close(channel)?;
+                    return Ok(());
+                }
+                // n starts a new post (works even if the list is empty).
+                if data == b"n" {
+                    self.compose_title.clear();
+                    self.compose_body.clear();
+                    self.compose_field = ComposeField::Title;
+                    self.screen = Screen::ComposePost;
+                } else {
+                    let len = self.posts.len();
+                    if len > 0 {
+                        let selected = self.list_state.selected().unwrap_or(0);
+                        if data == b"\x1b[A" || data == b"\x1bOA" {
+                            self.list_state.select(Some(selected.saturating_sub(1)));
+                        } else if data == b"\x1b[B" || data == b"\x1bOB" {
+                            self.list_state.select(Some((selected + 1).min(len - 1)));
+                        } else if data == b"\r" {
+                            self.screen = Screen::Detail(selected);
+                            self.comments = match crate::db::list_comments(&self.db, self.posts[selected].id).await {
+                                Ok(comments) => comments,
+                                Err(e) => {
+                                    eprintln!("[db] failed to load comments: {e}");
+                                    Vec::new()
+                                }
+                            };
+                        }
                     }
                 }
             }
-            Screen::Detail(_) => {
-                // b or Escape — go back to the list.
+
+            Screen::Detail(i) => {
+                if data == b"q" {
+                    session.close(channel)?;
+                    return Ok(());
+                }
                 if data == b"b" || data == b"\x1b" {
                     self.screen = Screen::List;
+                } else if data == b"c" {
+                    // c starts a comment on the post we're viewing.
+                    self.compose_body.clear();
+                    self.compose_field = ComposeField::Body;
+                    self.screen = Screen::ComposeComment(i);
+                }
+            }
+
+            Screen::ComposePost => {
+                if data == b"\x1b" {
+                    self.screen = Screen::List; // Esc cancels
+                } else if data == b"\x04" {
+                    // Ctrl+D submits (requires a non-empty title).
+                    if !self.compose_title.trim().is_empty() {
+                        if let Err(e) = crate::db::insert_post(&self.db, 1, &self.compose_title, &self.compose_body).await {
+                            eprintln!("[db] failed to insert post: {e}");
+                        }
+                        self.posts = crate::db::list_posts(&self.db).await.unwrap_or_default();
+                        if !self.posts.is_empty() {
+                            self.list_state.select(Some(0));
+                        }
+                    }
+                    self.screen = Screen::List;
+                } else if data == b"\r" {
+                    // Enter: Title field → move to Body; Body field → newline.
+                    match self.compose_field {
+                        ComposeField::Title => self.compose_field = ComposeField::Body,
+                        ComposeField::Body => self.compose_body.push('\n'),
+                    }
+                } else {
+                    self.edit_field(data);
+                }
+            }
+
+            Screen::ComposeComment(i) => {
+                if data == b"\x1b" {
+                    self.screen = Screen::Detail(i); // Esc cancels
+                } else if data == b"\x04" {
+                    // Ctrl+D submits (requires a non-empty body).
+                    if !self.compose_body.trim().is_empty() {
+                        let post_id = self.posts[i].id;
+                        if let Err(e) = crate::db::insert_comment(&self.db, post_id, 1, &self.compose_body).await {
+                            eprintln!("[db] failed to insert comment: {e}");
+                        }
+                        self.comments = crate::db::list_comments(&self.db, post_id).await.unwrap_or_default();
+                    }
+                    self.screen = Screen::Detail(i);
+                } else if data == b"\r" {
+                    self.compose_body.push('\n');
+                } else {
+                    push_printable(&mut self.compose_body, data);
                 }
             }
         }
 
-        // Redraw so the highlight moves.
-        if let Some(terminal) = self.terminal.as_mut() {
-            let posts = &self.posts;
-            let state = &mut self.list_state;
-            let detail = match self.screen {
-                Screen::List => None,
-                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
-            };
-            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
-        }
+        self.redraw()?;
         Ok(())
     }
 
@@ -221,14 +307,8 @@ impl Handler for ClientHandler {
         let rect = Rect::new(0, 0, col_width as u16, row_height as u16);
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.resize(rect)?;
-            let posts = &self.posts;
-            let state = &mut self.list_state;
-            let detail = match self.screen {
-                Screen::List => None,
-                Screen::Detail(i) => posts.get(i).map(|p| (p, self.comments.as_slice())),
-            };
-            terminal.draw(|frame| draw_ui(frame, posts, state, detail))?;
         }
+        self.redraw()?;
         Ok(())
     }
 }
@@ -237,5 +317,18 @@ impl Handler for ClientHandler {
 impl Drop for ClientHandler {
     fn drop(&mut self) {
         println!("[disconnect] client #{}", self.id);
+    }
+}
+
+/// Append typed bytes to a text buffer: printable ASCII gets pushed,
+/// Backspace (0x7f or 0x08) deletes the last character, everything else
+/// (control codes, escape sequences) is ignored.
+fn push_printable(buf: &mut String, data: &[u8]) {
+    for &b in data {
+        if b == 0x7f || b == 0x08 {
+            buf.pop();
+        } else if (0x20..=0x7e).contains(&b) {
+            buf.push(b as char);
+        }
     }
 }

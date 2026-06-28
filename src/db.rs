@@ -181,3 +181,28 @@ pub async fn list_comments(pool: &SqlitePool, post_id: i64) -> Result<Vec<Commen
 
     Ok(comments)
 }
+
+
+pub async fn insert_post(pool: &SqlitePool, author_id: i64, title: &str, body: &str)
+                         -> Result<(), sqlx::Error>
+{
+    sqlx::query("INSERT INTO posts (author_id, title, body) VALUES (?, ?, ?)")
+        .bind(author_id)
+        .bind(title)
+        .bind(body)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_comment(pool: &SqlitePool, post_id: i64, author_id: i64, body: &str)
+                            -> Result<(), sqlx::Error>
+{
+    sqlx::query("INSERT INTO comments (post_id, author_id, body) VALUES (?, ?, ?)")
+        .bind(post_id)
+        .bind(author_id)
+        .bind(body)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

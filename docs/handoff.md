@@ -12,7 +12,7 @@ This is a **learning project** — how you work matters as much as what you buil
 > Read `docs/handoff.md`, then `docs/project-context.md` and `docs/architecture.md`.
 > Note the working-style section: go step-by-step with verification, no large code
 > dumps, and I run the code myself in my IDE (don't auto-edit `main.rs` or run cargo
-> unless I ask). We're starting **Build Step 6: Create flows (composer)**. Confirm
+> unless I ask). We're starting **Build Step 7: Identity → Users**. Confirm
 > you've read the context and propose the first small step.
 
 ---
@@ -57,33 +57,35 @@ brief and `architecture.md` for how the code is structured.
 - ✅ **Step 5** — Comments: `comments` table + `Comment` struct + `list_comments(pool,
   post_id)` in `db.rs`. Comments lazily loaded into `ClientHandler.comments` when Enter
   opens a post. `draw_detail` renders title + body + comments, splitting body/comment
-  text on `\n` so paragraphs display properly. `detail` arg to `draw_ui` is now a tuple
-  `Option<(&Post, &[Comment])>`.
+  text on `\n` so paragraphs display properly.
+- ✅ **Step 6** — Create flows (hand-rolled composer, NOT `tui-textarea` — its 0.7.0
+  needs ratatui `^0.29`, incompatible with our 0.30). New `Screen` variants
+  `ComposePost` / `ComposeComment(usize)` + `ComposeField` (Title/Body, in `tui.rs`).
+  Compose text in `compose_title` / `compose_body` `String` fields. Single `redraw()`
+  method centralizes all drawing (replaced 3 duplicated blocks). `data()` routes
+  keystrokes per-screen via `push_printable` / `edit_field`. `n` new post, `c` comment,
+  Enter advances/newlines, Ctrl+D submits, Esc cancels. `insert_post` / `insert_comment`
+  in `db.rs`; reload from DB after each write. `q` quits only in List/Detail.
 
-## Your immediate task: Step 6 — Create flows (composer)
+## Your immediate task: Step 7 — Identity → Users
 
-**Goal:** the write path — create new posts and comments from inside the TUI (so far
-everything is read-only seed data). This is where shPlank becomes truly interactive.
+**Goal:** replace the hardcoded `author_id = 1` with real users keyed by SSH
+fingerprint. First connection from a new key creates a user (prompting for a display
+name). Author names render in the list/detail. A hardcoded admin fingerprint gets
+delete powers.
 
-**Key new dependency:** the `tui-textarea` crate for multi-line text input — far
-better than hand-decoding every keystroke (which we only do for single-key nav).
-Verify the current version + ratatui-0.30 compatibility on crates.io/docs.rs before
-adding it (ratatui 0.30 is recent; confirm tui-textarea supports it).
+**The detailed sub-step plan lives in [`step-6-7-plan.md`](step-6-7-plan.md) §STEP 7**
+(7.1–7.7) — `users` table + seed-ordering gotcha, `User` struct + lookup/create
+queries, author-name JOINs, first-connect name prompt (`Screen::SetName`), wiring
+`current_user_id` into inserts, and admin delete.
 
-**Rough sub-steps (verify each):**
-- Add new `Screen` variants for composing (e.g. `ComposePost`, `ComposeComment(post_id)`).
-- Hold a `tui-textarea` `TextArea` in `ClientHandler` for the active editor.
-- Route keystrokes to the textarea while composing; a submit key (e.g. Ctrl+S or Enter
-  in a single-line title field) triggers an `INSERT`.
-- Add `insert_post(...)` / `insert_comment(...)` to `db.rs`.
-- After insert, reload posts/comments from the DB (it stays the source of truth) and
-  return to the relevant view.
-
-**Open question to resolve with the human:** post composition needs both a title and a
-body — decide the UX (two-field form? title line then body?). Ask before building.
+**Decisions to confirm with the human before building** (see plan §7.7): the admin
+key's actual fingerprint, anonymous-posting policy (default: no), display-name rules,
+and whether deleting a post cascades to its comments.
 
 Keep established patterns: runtime `sqlx::query(...)`, no `query!` macros,
-match-on-screen dispatch in `data`, inline field borrows inside terminal blocks.
+match-on-screen dispatch in `data`, inline field borrows / `redraw()`, reload-from-DB
+after writes.
 
 ## Technical must-knows (don't skip)
 
@@ -131,6 +133,6 @@ Expect a cyan `shPlank` box. Until 2(c) lands, disconnect by Ctrl+C-ing the serv
 ## Build order (full roadmap)
 
 1 ✅ toolchain · 2a ✅ / 2b ✅ / 2c ✅ · 3 ✅ sqlx+SQLite · 4 ✅ post detail ·
-5 ✅ comments · **6 ⬅ next (composer, tui-textarea)** · 7 ⬜ Users from
-fingerprint + admin mod · 8 ⬜ polish · 9 ⬜ cross-compile + deploy to Pi.
+5 ✅ comments · 6 ✅ composer (hand-rolled) · **7 ⬅ next (Users from fingerprint +
+admin mod)** · 8 ⬜ polish · 9 ⬜ cross-compile + deploy to Pi.
 See `project-context.md` for details on each.

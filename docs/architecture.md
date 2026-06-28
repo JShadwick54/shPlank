@@ -156,7 +156,18 @@ between those two worlds.
 - **Database as the single source of truth.** The SQLite DB — not hand-rolled
   in-memory state — is authoritative for posts/comments. Each `ClientHandler`
   loads its own snapshot from the DB (posts at shell start, a post's comments
-  when opened) rather than sharing mutable state between connections.
+  when opened) rather than sharing mutable state between connections. After every
+  write (new post/comment) the handler **reloads** from the DB rather than
+  patching its in-memory `Vec`.
+
+- **Hand-rolled composer, not `tui-textarea`.** The text input for new posts/
+  comments decodes keystrokes directly in `data()` (`push_printable` +
+  per-screen routing), reusing the existing byte-handling approach. `tui-textarea`
+  was the intended crate but its latest release (0.7.0) requires ratatui `^0.29`
+  and is incompatible with our ratatui 0.30. Revisit it if it gains 0.30 support —
+  it would replace only the editing internals. Composer keys: `n` new post, `c`
+  comment, Enter advances/newlines, **Ctrl+D submits** (not Ctrl+S — that collides
+  with terminal XOFF flow control), Esc cancels.
 
 - **russh version pinning matters.** API differs between russh 0.61 (crates.io)
   and the GitHub `main` branch examples. Code here targets **0.61** — e.g.
@@ -184,8 +195,8 @@ Build order from the project plan, with current status:
 | 3    | SQLite via sqlx — Posts table, scrollable List widget | ✅ Done      |
 | 4    | Post detail view — title + body; list ↔ detail nav    | ✅ Done      |
 | 5    | Comments — table + render under a post                | ✅ Done      |
-| 6    | Create flows — composer (tui-textarea) for posts/comments | ⏳ Next   |
-| 7    | Identity → Users — promote fingerprint to User rows; admin moderation | ⬜ Planned |
+| 6    | Create flows — hand-rolled composer for posts/comments | ✅ Done     |
+| 7    | Identity → Users — promote fingerprint to User rows; admin moderation | ⏳ Next |
 | 8    | Polish — keybindings, help/status bar, empty states, error handling | ⬜ Planned |
 | 9    | Package + deploy — cross-compile to Pi (ARM), systemd unit on 2222 | ⬜ Planned |
 

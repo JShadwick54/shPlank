@@ -10,6 +10,13 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::db::{Comment, Post};
 
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum ComposeField {
+    Title,
+    Body,
+}
+
 /// Bridges ratatui to the SSH channel.
 ///
 /// ratatui only knows how to write bytes to "something that implements
@@ -77,7 +84,7 @@ pub fn draw_ui(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut List
     }
 }
 
-fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
+pub fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListState) {
     let items: Vec<ListItem> = posts
         .iter()
         .map(|p| ListItem::new(p.title.clone()))
@@ -96,7 +103,7 @@ fn draw_list(frame: &mut ratatui::Frame, posts: &[Post], list_state: &mut ListSt
     frame.render_stateful_widget(list, frame.area(), list_state);
 }
 
-fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]) {
+pub fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]) {
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(&post.title, Style::default().add_modifier(Modifier::BOLD))),
         Line::raw(""),
@@ -136,5 +143,59 @@ fn draw_detail(frame: &mut ratatui::Frame, post: &Post, comments: &[Comment]) {
         )
         .wrap(Wrap { trim: false });
 
+    frame.render_widget(paragraph, frame.area());
+}
+
+pub fn draw_compose_post(frame: &mut ratatui::Frame, title: &str, body: &str, field: ComposeField) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    let title_label = if field == ComposeField::Title { "Title ▶" } else { "Title :" };
+    lines.push(Line::styled(title_label, Style::default().fg(Color::DarkGray)));
+    lines.push(Line::raw(title.to_owned()));
+    lines.push(Line::raw(""));
+
+    let body_label = if field == ComposeField::Body { "Body ▶" } else { "Body :" };
+    lines.push(Line::styled(body_label, Style::default().fg(Color::DarkGray)));
+    for l in body.split('\n') {
+        lines.push(Line::raw(l.to_owned()));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "[ Enter ] next/newline   [ Ctrl+D ] submit   [ Esc ] cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" New Post ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, frame.area());
+}
+
+
+pub fn draw_compose_comment(frame: &mut ratatui::Frame, body: &str) {
+    let mut lines: Vec<Line> = Vec::new();
+    for l in body.split('\n') {
+        lines.push(Line::raw(l.to_owned()));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "[ Enter ] newline   [ Ctrl+D ] submit   [ Esc ] cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" New Comment ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, frame.area());
 }

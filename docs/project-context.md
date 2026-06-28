@@ -23,15 +23,17 @@ simpler and more focused:
 > As of **2026-06-27** — see [`architecture.md`](architecture.md) §6 for the live table.
 
 - Rust toolchain set up; **RustRover** as the IDE.
-- Steps 1–5 **done**: russh server on port 2222 accepts any key, logs
+- Steps 1–6 **done**: russh server on port 2222 accepts any key, logs
   connect/auth/disconnect, captures the connecting key's SHA256 fingerprint,
   renders the TUI over the SSH channel, handles input (`q`/Ctrl+C quit, window
   resize), stores posts + comments in SQLite (`sqlx`), shows a navigable post
-  list, and a detail view (title + body + comments) reachable with Enter.
+  list and a detail view (title + body + comments), and can **create** posts and
+  comments from inside the TUI via a hand-rolled composer (`n`/`c`, Ctrl+D submit).
 - Code is split into modules: `main.rs` (bootstrap), `server.rs` (SSH layer),
   `tui.rs` (rendering layer), `db.rs` (SQLite layer).
-- **Next: Step 6** — create flows: a `tui-textarea` composer for new posts and
-  comments (the write path; reads are complete).
+- **Next: Step 7** — identity: promote the captured SSH fingerprint into real
+  `User` rows; first connect prompts for a display name; wire `author_id` into
+  posts/comments; hardcoded admin fingerprint for moderation.
 
 ## Working style (important — read this first)
 
